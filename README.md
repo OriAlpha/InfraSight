@@ -227,3 +227,11 @@ To route chat completions through the Dockerized proxy:
     )
     ```
 
+---
+
+## Author
+
+- **Suhas Goravale Siddaramu**
+
+
+
