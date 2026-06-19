@@ -1,0 +1,30 @@
+services:
+  infrasight:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: infrasight:latest
+    container_name: infrasight
+    ports:
+      - "3000:3000"
+    environment:
+      - UPSTREAM_PROVIDER=${UPSTREAM_PROVIDER:-deepinfra}
+      - UPSTREAM_API_BASE=${UPSTREAM_API_BASE:-https://api.deepinfra.com}
+      - UPSTREAM_API_KEY=${UPSTREAM_API_KEY:-${DEEPINFRA_API_KEY:-}}
+      - PORT=3000
+      - DB_PATH=/app/data/infrasight.db
+      - CLIENT_URL=http://localhost:3000
+      - DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED:-false}
+      - DASHBOARD_USERNAME=${DASHBOARD_USERNAME:-admin}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
+      - LOG_PAYLOADS=${LOG_PAYLOADS:-true}
+      - MASK_PII=${MASK_PII:-false}
+      - ACTIVE_PII_REDACTION=${ACTIVE_PII_REDACTION:-false}
+      - BANNED_KEYWORDS=${BANNED_KEYWORDS:-}
+    volumes:
+      - infrasight_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  infrasight_data:
+    name: infrasight_data
