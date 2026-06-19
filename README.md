@@ -5,7 +5,57 @@ InfraSight is a lightweight, provider-agnostic observability platform and transp
 
 ---
 
+## High-Level Workflow
 
+```mermaid
+graph TD
+    classDef default fill:#1e1e2f,stroke:#333,stroke-width:1px,color:#fff;
+    classDef client fill:#2d1b4e,stroke:#6c5ce7,stroke-width:2px,color:#fff;
+    classDef proxy fill:#1a365d,stroke:#3182ce,stroke-width:2px,color:#fff;
+    classDef llm fill:#22543d,stroke:#38a169,stroke-width:2px,color:#fff;
+    classDef dashboard fill:#742a2a,stroke:#e53e3e,stroke-width:2px,color:#fff;
+
+    subgraph Client [Client Application]
+        App[Application / SDK Client]:::client
+    end
+
+    subgraph InfraSight [InfraSight Proxy Server]
+        Router[Proxy Router / Express]:::proxy
+        Guard[Active Guardrails<br/>PII Masking & Keyword Block]:::proxy
+        HITL[HITL Interceptor<br/>Approval Checkpoint]:::proxy
+        DB[Database Gateway<br/>SQLite / Postgres]:::proxy
+        Queue[Background Evaluator Queue<br/>NLP & LLM-as-a-Judge]:::proxy
+        Alerts[Alerting Engine<br/>Slack & Discord Webhooks]:::proxy
+    end
+
+    subgraph Operator [Operator Control Panel]
+        WebUI[React Web Dashboard]:::dashboard
+    end
+
+    subgraph Provider [Upstream LLM Provider]
+        LLM[Upstream API<br/>DeepInfra / OpenAI / Ollama]:::llm
+    end
+
+    App -->|1. LLM Chat Request| Router
+    Router -->|2. Filter Input| Guard
+    Guard -->|If Violates Policy| App
+    Guard -->|Passed| HITL
+    
+    HITL -->|3. Pause & Review if over limit| WebUI
+    WebUI -->|Approve / Reject| HITL
+    
+    HITL -->|4. Forward Request| LLM
+    LLM -->|5. Return Response| Router
+    
+    Router -->|6. Log Telemetry Data| DB
+    Router -->|7. Queue Evaluator Job| Queue
+    Router -->|8. Return Response| App
+    
+    Queue -->|Asynchronous Evaluation| Queue
+    Queue -->|Threshold Violation| Alerts
+```
+
+---
 
 ## Getting Started
 
