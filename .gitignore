@@ -17,3 +17,7 @@ __pycache__/
 # IDEs
 .vscode/
 .idea/
+
+# Local Docs (untracked on GitHub)
+docs/
+

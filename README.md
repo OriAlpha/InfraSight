@@ -5,13 +5,7 @@ InfraSight is a lightweight, provider-agnostic observability platform and transp
 
 ---
 
-## Documentation
 
-Detailed documentation is available in the `docs/` folder:
-- [Architecture & Implementation Design](docs/architecture.md) - Deep dive into proxy routing, observability database schema, security features, and agent traces.
-- [Differentiation Report](docs/comparison.md) - A comparative analysis showing how InfraSight differentiates from other LLM observability tools.
-
----
 
 ## Getting Started
 
