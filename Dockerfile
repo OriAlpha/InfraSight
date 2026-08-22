@@ -53,11 +53,18 @@ COPY --from=client-builder /app/client/dist /app/client/dist
 COPY --from=server-installer /app/server/node_modules /app/server/node_modules
 COPY server/ /app/server/
 
-# Create directory for SQLite persistent data
-RUN mkdir -p /app/data
+# Create the SQLite data directory and hand the whole app to the unprivileged
+# `node` user that the base image already provides.
+RUN mkdir -p /app/data && chown -R node:node /app
+
+# Drop root before running the server.
+USER node
 
 # Expose server port
 EXPOSE 3000
+
+# curl is installed above specifically for this probe.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD curl -fsS http://localhost:3000/api/health || exit 1
 
 # Start server
 WORKDIR /app/server

@@ -8,22 +8,53 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # ── Upstream provider ────────────────────────────────────────────
       - UPSTREAM_PROVIDER=${UPSTREAM_PROVIDER:-deepinfra}
       - UPSTREAM_API_BASE=${UPSTREAM_API_BASE:-https://api.deepinfra.com}
       - UPSTREAM_API_KEY=${UPSTREAM_API_KEY:-${DEEPINFRA_API_KEY:-}}
+      # The image sets NODE_ENV=production, where a missing key is reported as
+      # a configuration error rather than answered with fabricated data.
+      # Set MOCK_MODE=true to run the dashboard demo without a provider.
+      - MOCK_MODE=${MOCK_MODE:-}
+      - STREAM_USAGE_INJECTION=${STREAM_USAGE_INJECTION:-true}
+
+      # ── Server ───────────────────────────────────────────────────────
       - PORT=3000
       - DB_PATH=/app/data/infrasight.db
       - CLIENT_URL=http://localhost:3000
+      - DATABASE_URL=${DATABASE_URL:-}
+      - EVALUATION_CONCURRENCY=${EVALUATION_CONCURRENCY:-3}
+
+      # ── Dashboard auth ───────────────────────────────────────────────
+      # DASHBOARD_PASSWORD is required when auth is enabled; the container
+      # exits on startup without it (and `restart: unless-stopped` will then
+      # retry), so set both together or neither.
       - DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED:-false}
       - DASHBOARD_USERNAME=${DASHBOARD_USERNAME:-admin}
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
+
+      # ── Privacy ──────────────────────────────────────────────────────
       - LOG_PAYLOADS=${LOG_PAYLOADS:-true}
-      - MASK_PII=${MASK_PII:-false}
+      - MASK_PII=${MASK_PII:-true}
       - ACTIVE_PII_REDACTION=${ACTIVE_PII_REDACTION:-false}
       - BANNED_KEYWORDS=${BANNED_KEYWORDS:-}
+
+      # ── Network hardening ────────────────────────────────────────────
+      - BLOCK_PRIVATE_UPSTREAM=${BLOCK_PRIVATE_UPSTREAM:-false}
+      - API_RATE_LIMIT=${API_RATE_LIMIT:-600}
+      - PROXY_RATE_LIMIT=${PROXY_RATE_LIMIT:-0}
+      - TRUST_PROXY=${TRUST_PROXY:-}
     volumes:
       - infrasight_data:/app/data
     restart: unless-stopped
+    # Give the process time to drain evaluations and checkpoint the WAL.
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
 
 volumes:
   infrasight_data:

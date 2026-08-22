@@ -20,7 +20,7 @@ const { runMigrations, getRequests, closeDb } = require('./db');
 const { seedModels } = require('./db/seed-models');
 const { readAuthConfig, createAuthMiddleware } = require('./utils/auth');
 const { createRateLimiter } = require('./utils/rate-limit');
-const { drainEvaluations } = require('./services/evaluator');
+const { drainEvaluations, recoverPendingEvaluations } = require('./services/evaluator');
 
 // Route modules
 const proxyRouter = require('./proxy');
@@ -309,6 +309,11 @@ async function start() {
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
+
+    // Pick up anything the evaluator had queued when the process last stopped.
+    // Deliberately not awaited — the server is already serving traffic.
+    recoverPendingEvaluations().catch(err =>
+      console.error('[server] Evaluation recovery failed:', err.message));
   } catch (err) {
     console.error('[server] Failed to start:', err);
     process.exit(1);

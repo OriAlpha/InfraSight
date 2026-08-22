@@ -13,6 +13,27 @@ const { getModels, updateModelPricing, insertModel, recalculateCosts } = require
 const router = Router();
 
 /**
+ * Validates a per-million pricing field.
+ *
+ * Shared by the create and update routes so a model cannot be registered with
+ * pricing that the update route would reject — negative rates would otherwise
+ * flow straight into cost rollups.
+ *
+ * @param {*} value
+ * @param {string} field - Field name used in the error message
+ * @returns {string|null} An error message, or null when the value is acceptable
+ */
+function validatePrice(value, field) {
+  if (value == null) return null;
+
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return `${field} must be a non-negative number`;
+  }
+
+  return null;
+}
+
+/**
  * GET /api/models
  * List all models with pricing information.
  */
@@ -33,9 +54,20 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { id, name, display_name, provider, input_cost_per_million, output_cost_per_million, context_window } = req.body;
-    if (!id) {
+    if (!id || typeof id !== 'string' || id.trim() === '') {
       return res.status(400).json({ error: { message: 'Model ID is required' } });
     }
+
+    const priceError = validatePrice(input_cost_per_million, 'input_cost_per_million')
+      || validatePrice(output_cost_per_million, 'output_cost_per_million');
+    if (priceError) {
+      return res.status(400).json({ error: { message: priceError } });
+    }
+
+    if (context_window != null && (!Number.isInteger(context_window) || context_window <= 0)) {
+      return res.status(400).json({ error: { message: 'context_window must be a positive integer' } });
+    }
+
     await insertModel({ id, name, display_name, provider, input_cost_per_million, output_cost_per_million, context_window });
     res.json({ success: true, id });
   } catch (err) {
@@ -65,15 +97,10 @@ router.put('/:id(*)', async (req, res) => {
       });
     }
 
-    if (input_cost_per_million != null && (typeof input_cost_per_million !== 'number' || input_cost_per_million < 0)) {
-      return res.status(400).json({
-        error: { message: 'input_cost_per_million must be a non-negative number' },
-      });
-    }
-    if (output_cost_per_million != null && (typeof output_cost_per_million !== 'number' || output_cost_per_million < 0)) {
-      return res.status(400).json({
-        error: { message: 'output_cost_per_million must be a non-negative number' },
-      });
+    const priceError = validatePrice(input_cost_per_million, 'input_cost_per_million')
+      || validatePrice(output_cost_per_million, 'output_cost_per_million');
+    if (priceError) {
+      return res.status(400).json({ error: { message: priceError } });
     }
 
     const result = await updateModelPricing(modelId, { input_cost_per_million, output_cost_per_million });

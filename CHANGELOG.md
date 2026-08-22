@@ -49,6 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful shutdown on `SIGTERM`/`SIGINT`: stop accepting connections, drain
   in-flight evaluations, checkpoint the SQLite WAL, and close the database.
 
+### Security
+- The Docker image now runs as the unprivileged `node` user and declares a
+  `HEALTHCHECK`. Upgrading an existing deployment needs a one-off
+  `chown -R node:node /app/data` on the `infrasight_data` volume; the server
+  reports this explicitly if the directory is not writable.
+- `docker-compose.yml` no longer forces `MASK_PII=false`, which silently
+  defeated PII masking in the deployment mode the README recommends. It also
+  passes through the new hardening settings.
+
 ### Added
 - Unit test suite (`npm test`) covering PII masking, URL validation, proxy
   helpers, auth, rate limiting, and queue concurrency.
@@ -62,9 +71,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is unreachable.
 - Composite index on `(trace_id, span_type)` for the per-insert agent-metric rollup.
 
+- Background evaluations survive a restart. The in-memory queue is rebuilt at
+  startup from requests that are logged but unscored, so nothing pending when
+  the process stopped is silently dropped
+  (`EVALUATION_RECOVERY_LIMIT`, `EVALUATION_RECOVERY_HOURS`).
+- A React error boundary per route: one page throwing during render no longer
+  blanks the whole dashboard.
+- Route-level code splitting. The initial bundle drops from 243 kB to 79 kB
+  gzipped, with the charting library loaded only by the pages that draw charts.
+- `POST /api/models` validates pricing and context window the same way
+  `PUT /api/models/:id` does, so a model cannot be registered with negative
+  rates that the update route would reject.
+
 ### Changed
+- Analytics no longer load a whole date range into memory. Latency percentiles
+  are computed in SQL (window functions on SQLite, `PERCENTILE_DISC` on
+  PostgreSQL), and the evaluation endpoint takes its totals from one aggregate
+  query while reading back only the rows that carry feedback or evaluation JSON.
+  A wide window was previously an out-of-memory risk.
+- The shared metric reduction moved into `db/eval-metrics.js`; both adapters
+  had their own copy, and the PostgreSQL adapter shed ~145 lines of it.
+- Evaluation cost totals round to 1e-6 instead of 1e-4. Any window totalling
+  under $0.00005 previously reported $0 while the overview endpoint showed the
+  real figure.
+- 401 and 429 responses surface an actionable message in the dashboard instead
+  of an opaque error.
 - CI runs the unit tests and parses every file under `server/`, replacing a
-  hand-maintained `node --check` list that had drifted out of date.
+  hand-maintained `node --check` list that had drifted out of date. It now also
+  runs a PostgreSQL service (booting the server against it), builds the Docker
+  image, and starts the container.
+
+### Removed
+- `updateDailyStats()` — exported by both adapters and called by nothing. The
+  `daily_stats` table it targeted is left in place; the analytics endpoints
+  aggregate directly in SQL, so no rollup is needed.
 
 ## [1.0.0] - 2026-06-19
 

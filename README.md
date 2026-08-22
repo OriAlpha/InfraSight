@@ -181,11 +181,23 @@ Clearing the database is irreversible, so `DELETE /api/logs` requires an explici
 
 ---
 
+### 7. Background Evaluation Recovery
+The LLM-as-a-Judge queue lives in memory, so a restart would otherwise drop
+anything still pending. On startup InfraSight asks the database which recent
+successful requests have no evaluation yet and re-queues them:
+```ini
+EVALUATION_RECOVERY_LIMIT=100   # 0 disables recovery
+EVALUATION_RECOVERY_HOURS=24
+```
+
+---
+
 ## Running the Test Suite
 
-The backend ships unit tests covering PII masking, URL validation, proxy
-helpers (SSE parsing, guardrails, token estimation), authentication, rate
-limiting, and evaluator queue concurrency:
+The backend ships tests covering PII masking, URL validation, proxy helpers
+(SSE parsing, guardrails, token estimation), authentication, rate limiting,
+evaluator queue concurrency and backlog recovery, analytics aggregation, and
+adapter parity between the SQLite and PostgreSQL backends:
 
 ```bash
 npm test
@@ -197,7 +209,16 @@ To parse every server-side file without running it:
 npm run lint
 ```
 
-Both run in CI on every push and pull request.
+Both run in CI on every push and pull request, alongside a PostgreSQL service
+that boots the server against Postgres and a job that builds and runs the
+Docker image.
+
+A handful of tests exercise the PostgreSQL adapter directly and skip unless a
+database is available:
+
+```bash
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/infrasight_test npm test
+```
 
 ---
 
@@ -318,6 +339,20 @@ Make sure Docker is installed on your machine and run:
 docker compose up -d --build
 ```
 This builds the production image, serves the app on port `3000`, and creates a persistent Docker volume named `infrasight_data` for the SQLite database.
+
+The container runs as the unprivileged `node` user and exposes a `HEALTHCHECK`
+against `/api/health`.
+
+> **Upgrading from an image built before this change:** the existing
+> `infrasight_data` volume is owned by root and the `node` user cannot write to
+> it. The server will say so explicitly on startup. Fix it once with:
+> ```bash
+> docker compose run --rm --user root infrasight chown -R node:node /app/data
+> ```
+
+Because the image sets `NODE_ENV=production`, starting it without an API key
+reports a configuration error rather than serving mock data. To run the
+dashboard demo without a provider, set `MOCK_MODE=true`.
 
 ### 2. Access the Dashboard
 Open your browser at [http://localhost:3000](http://localhost:3000) to view the UI.

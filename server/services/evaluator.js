@@ -15,7 +15,7 @@
  */
 'use strict';
 
-const { getRequestById, updateEvaluation, getToolSpansForTrace } = require('../db');
+const { getRequestById, updateEvaluation, getToolSpansForTrace, getPendingEvaluationIds } = require('../db');
 const { getConfig } = require('../utils/config');
 const { createTaskQueue } = require('./task-queue');
 
@@ -89,6 +89,50 @@ function drainEvaluations(timeoutMs = 5000) {
  */
 function getQueueStats() {
   return queue.stats();
+}
+
+/**
+ * Re-queues requests that were logged but never scored.
+ *
+ * The work queue lives in memory, so anything pending when the process stopped
+ * would otherwise be lost. Rather than persisting the queue, this asks the
+ * database which recent successful requests still have no evaluation.
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.limit] - Cap on requests to recover; 0 disables recovery
+ * @param {number} [opts.lookbackHours] - How far back to look
+ * @returns {Promise<number>} How many requests were re-queued
+ */
+async function recoverPendingEvaluations(opts = {}) {
+  const limit = opts.limit != null
+    ? opts.limit
+    : parseInt(process.env.EVALUATION_RECOVERY_LIMIT, 10) || 100;
+
+  if (!limit || limit <= 0) {
+    return 0;
+  }
+
+  const lookbackHours = opts.lookbackHours != null
+    ? opts.lookbackHours
+    : parseInt(process.env.EVALUATION_RECOVERY_HOURS, 10) || 24;
+
+  try {
+    const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
+    const ids = await getPendingEvaluationIds({ limit, since });
+
+    for (const id of ids) {
+      queue.push(id);
+    }
+
+    if (ids.length > 0) {
+      console.log(`[evaluator] Re-queued ${ids.length} unscored request(s) from the last ${lookbackHours}h.`);
+    }
+
+    return ids.length;
+  } catch (err) {
+    console.error('[evaluator] Could not recover pending evaluations:', err.message);
+    return 0;
+  }
 }
 
 /**
@@ -671,4 +715,5 @@ module.exports = {
   queueEvaluation,
   drainEvaluations,
   getQueueStats,
+  recoverPendingEvaluations,
 };
