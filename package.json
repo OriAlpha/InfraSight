@@ -7,9 +7,14 @@
     "dev:server": "cd server && node --watch index.js",
     "dev:client": "cd client && npx vite --host",
     "build": "cd client && npx vite build",
-    "start": "cd server && node index.js"
+    "start": "cd server && node index.js",
+    "test": "cd server && node --test",
+    "lint": "node scripts/check-syntax.js"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

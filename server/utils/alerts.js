@@ -7,6 +7,32 @@
 'use strict';
 
 const { getConfig } = require('./config');
+const { assertSafeWebhookUrl } = require('./url-guard');
+
+/** Webhook URLs already reported as invalid, so each is logged only once. */
+const rejectedWebhooks = new Set();
+
+/**
+ * Returns the URL if it is a safe webhook target, otherwise null.
+ *
+ * @param {string} url
+ * @param {string} label
+ * @returns {string|null}
+ */
+function validWebhook(url, label) {
+  if (!url) return null;
+
+  try {
+    assertSafeWebhookUrl(url, label);
+    return url;
+  } catch (err) {
+    if (!rejectedWebhooks.has(url)) {
+      rejectedWebhooks.add(url);
+      console.error(`[alerts] Ignoring ${label}: ${err.message}`);
+    }
+    return null;
+  }
+}
 
 /**
  * Sends real-time alerting notification to Slack & Discord if configured thresholds are met.
@@ -20,8 +46,8 @@ const { getConfig } = require('./config');
  */
 async function sendWebhookAlert({ id, model, latency_ms, status, error_message }) {
   try {
-    const slackUrl = await getConfig('ALERT_SLACK_WEBHOOK_URL');
-    const discordUrl = await getConfig('ALERT_DISCORD_WEBHOOK_URL');
+    const slackUrl = validWebhook(await getConfig('ALERT_SLACK_WEBHOOK_URL'), 'Slack webhook URL');
+    const discordUrl = validWebhook(await getConfig('ALERT_DISCORD_WEBHOOK_URL'), 'Discord webhook URL');
     const alertOnFailureVal = await getConfig('ALERT_ON_FAILURE');
     const latencyThresholdVal = await getConfig('ALERT_LATENCY_THRESHOLD_MS');
 

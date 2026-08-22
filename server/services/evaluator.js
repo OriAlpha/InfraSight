@@ -17,6 +17,7 @@
 
 const { getRequestById, updateEvaluation, getToolSpansForTrace } = require('../db');
 const { getConfig } = require('../utils/config');
+const { createTaskQueue } = require('./task-queue');
 
 const EVALUATOR_MODEL = 'meta-llama/Meta-Llama-3.1-8B-Instruct';
 
@@ -45,50 +46,49 @@ async function getEvaluatorUrl() {
   return 'https://api.deepinfra.com/v1/openai/chat/completions';
 }
 
-const queue = [];
-let activeWorkers = 0;
+/**
+ * Resolves the configured concurrency limit.
+ * @returns {Promise<number>}
+ */
+async function resolveConcurrencyLimit() {
+  const limitStr = (await getConfig('EVALUATION_CONCURRENCY')) || process.env.EVALUATION_CONCURRENCY;
+  const limit = parseInt(limitStr, 10);
+  return Number.isFinite(limit) && limit > 0 ? limit : 3;
+}
+
+const queue = createTaskQueue({
+  run: (requestId) => performEvaluation(requestId),
+  getLimit: resolveConcurrencyLimit,
+  onError: (err, requestId) =>
+    console.error(`[evaluator] Error running evaluation for request ${requestId}:`, err.message),
+});
 
 /**
  * Triggers an asynchronous evaluation for a logged request.
- * Enqueues the request and runs background task workers with concurrency limits.
+ *
  * @param {string} requestId - The UUID of the request to evaluate
  */
 function queueEvaluation(requestId) {
-  if (!queue.includes(requestId)) {
-    queue.push(requestId);
-  }
-  // Process the queue asynchronously
-  setImmediate(processQueue);
+  queue.push(requestId);
 }
 
 /**
- * Process queue runner with concurrency control.
+ * Waits for in-flight and queued evaluations to finish, so a shutdown does not
+ * discard results that were about to be written.
+ *
+ * @param {number} [timeoutMs=5000] - Give up after this long
+ * @returns {Promise<boolean>} True if the queue drained, false on timeout
  */
-async function processQueue() {
-  const limitStr = (await getConfig('EVALUATION_CONCURRENCY')) || process.env.EVALUATION_CONCURRENCY;
-  const limit = parseInt(limitStr, 10) || 3;
+function drainEvaluations(timeoutMs = 5000) {
+  return queue.drain(timeoutMs);
+}
 
-  if (activeWorkers >= limit || queue.length === 0) {
-    return;
-  }
-
-  activeWorkers++;
-  const requestId = queue.shift();
-
-  try {
-    await performEvaluation(requestId);
-  } catch (err) {
-    console.error(`[evaluator] Error running evaluation for request ${requestId}:`, err.message);
-  } finally {
-    activeWorkers--;
-    // Check if more tasks can be run
-    setImmediate(processQueue);
-  }
-
-  // Parallelize if capacity remains and queue has tasks
-  if (queue.length > 0 && activeWorkers < limit) {
-    setImmediate(processQueue);
-  }
+/**
+ * Current queue depth and worker count. Exposed for diagnostics.
+ * @returns {{ pending: number, active: number }}
+ */
+function getQueueStats() {
+  return queue.stats();
 }
 
 /**
@@ -669,4 +669,6 @@ ${expectedAnswer}`;
 
 module.exports = {
   queueEvaluation,
+  drainEvaluations,
+  getQueueStats,
 };

@@ -32,7 +32,7 @@ jobs:
           npm run build
 
   backend:
-    name: Verify Backend
+    name: Test Backend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -50,19 +50,14 @@ jobs:
           cd server
           npm ci
 
+      # Parses every file under server/ — no hand-maintained list to fall behind.
       - name: Verify syntax
+        run: node scripts/check-syntax.js
+
+      - name: Run unit tests
         run: |
           cd server
-          node --check index.js
-          node --check proxy/index.js
-          node --check api/analytics.js
-          node --check api/conversations.js
-          node --check api/logs.js
-          node --check api/models.js
-          node --check api/prompts.js
-          node --check api/traces.js
-          node --check utils/pii.js
-          node --check db/seed-models.js
+          node --test
 
   python-tests:
     name: Verify Python Demos

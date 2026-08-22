@@ -63,8 +63,32 @@ function runMigrations() {
   try {
     database.prepare('CREATE INDEX IF NOT EXISTS idx_requests_trace_id ON requests(trace_id)').run();
     database.prepare('CREATE INDEX IF NOT EXISTS idx_requests_span_id ON requests(span_id)').run();
+    // Supports the per-insert agent-metric rollup, which filters a trace by span type.
+    database.prepare('CREATE INDEX IF NOT EXISTS idx_requests_trace_span_type ON requests(trace_id, span_type)').run();
   } catch (err) {
     // Ignore if exists
+  }
+}
+
+/**
+ * Closes the database handle, checkpointing the WAL so no -wal/-shm files are
+ * left behind for the next process to recover.
+ *
+ * @returns {Promise<void>}
+ */
+async function closeDb() {
+  if (!db) return;
+
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch (err) {
+    console.error('[db/sqlite] WAL checkpoint failed:', err.message);
+  }
+
+  try {
+    db.close();
+  } finally {
+    db = null;
   }
 }
 
@@ -1393,6 +1417,7 @@ async function getSubsequentSpans(traceId, createdAt) {
 module.exports = {
   getDb,
   runMigrations,
+  closeDb,
   // Requests
   insertRequest,
   getRequests,

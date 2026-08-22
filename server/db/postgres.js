@@ -54,6 +54,31 @@ async function runMigrations() {
   const schemaPath = path.resolve(__dirname, 'postgres-schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf-8');
   await dbPool.query(schema);
+
+  // Supports the per-insert agent-metric rollup, which filters a trace by span type.
+  try {
+    await dbPool.query('CREATE INDEX IF NOT EXISTS idx_requests_trace_span_type ON requests(trace_id, span_type)');
+  } catch (err) {
+    console.error('[db/postgres] Could not create trace/span_type index:', err.message);
+  }
+}
+
+/**
+ * Drains and closes the connection pool.
+ *
+ * @returns {Promise<void>}
+ */
+async function closeDb() {
+  if (!pool) return;
+
+  const current = pool;
+  pool = null;
+
+  try {
+    await current.end();
+  } catch (err) {
+    console.error('[db/postgres] Error closing pool:', err.message);
+  }
 }
 
 // Helper to calculate default date ranges
@@ -1178,6 +1203,7 @@ async function getSubsequentSpans(traceId, createdAt) {
 module.exports = {
   getDb,
   runMigrations,
+  closeDb,
   // Requests
   insertRequest,
   getRequests,

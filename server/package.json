@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "seed": "node db/seed-models.js"
+    "seed": "node db/seed-models.js",
+    "test": "node --test",
+    "check": "node --check index.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
@@ -14,5 +16,8 @@
     "express": "^4.21.0",
     "pg": "^8.22.0",
     "uuid": "^11.1.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

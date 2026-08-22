@@ -111,6 +111,14 @@ DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=your_strong_password
 ```
 
+> `DASHBOARD_PASSWORD` is mandatory when auth is enabled. The server refuses to
+> start without it rather than falling back to a default password. Credentials
+> are compared in constant time.
+
+When auth is **disabled**, anyone who can reach the port can read logged prompts
+and repoint the upstream provider, so the server logs a warning at startup. Keep
+it bound to localhost, or enable auth, before exposing it.
+
 ### 2. Privacy Mode (Payload Logging Toggle)
 By default, InfraSight logs the full text content of prompts and responses (`input_messages`, `output_message`, `raw_request`, and `raw_response`) to the database. If you require strict privacy compliance (e.g. GDPR, HIPAA) or want to prevent logging sensitive text, you can disable payload logging in `.env`:
 ```ini
@@ -118,8 +126,78 @@ LOG_PAYLOADS=false
 ```
 When set to `false`, text payloads are not logged to the database and are replaced with a `[Payload logging disabled]` placeholder. Standard telemetry like latencies, costs, models, error messages, and token counts are still recorded.
 
-### 3. Token Estimation Fallback
-Some upstream API providers (especially in streaming modes) do not return the `usage` block containing token counts. InfraSight has a built-in character-count fallback heuristic (approx. 4 characters per token) to automatically estimate and log prompt and completion tokens when the upstream provider fails to return them.
+### 3. PII Masking
+Stored payloads are scrubbed of emails, phone numbers, US SSNs, Luhn-valid card
+numbers, and provider API keys before they reach the database. This is **on by
+default**:
+```ini
+MASK_PII=true          # set to false to store payloads verbatim
+```
+
+Masking applies to what is *stored*. To rewrite messages before they are sent to
+the upstream model, enable in-transit redaction as well:
+```ini
+ACTIVE_PII_REDACTION=true
+```
+Both handle plain-string and multimodal (content-parts) messages.
+
+### 4. Token Accounting
+For streaming requests InfraSight adds `stream_options: { include_usage: true }`,
+so providers emit a final usage frame and token counts are exact rather than
+estimated. If your provider rejects that field, turn it off:
+```ini
+STREAM_USAGE_INJECTION=false
+```
+
+When a provider still returns no `usage` block, a character-count fallback
+(approx. 4 characters per token) estimates prompt and completion tokens so cost
+and usage reporting stay populated.
+
+### 5. Mock Mode
+Without a usable API key, the proxy can answer with simulated completions — handy
+for demos and UI work, dangerous if it happens unnoticed in production.
+```ini
+MOCK_MODE=true    # always mock
+MOCK_MODE=false   # never mock; missing keys surface as a clear error
+# unset           # mock automatically in development only
+```
+When `NODE_ENV=production` and no key is configured, requests fail with a
+`missing_api_key` configuration error instead of returning fabricated data.
+
+### 6. Network Hardening
+The upstream base URL and alert webhooks are operator-settable at runtime, so
+they are validated before use: non-HTTP schemes and cloud instance-metadata
+endpoints are always rejected, and webhooks additionally require HTTPS and a
+public host. Local providers (Ollama, vLLM, Docker service names) keep working.
+```ini
+BLOCK_PRIVATE_UPSTREAM=true   # also reject loopback/private upstream targets
+API_RATE_LIMIT=600            # per-IP requests/min for the dashboard API (0 = off)
+PROXY_RATE_LIMIT=0            # per-IP requests/min for /api/proxy (0 = off)
+TRUST_PROXY=1                 # read client IPs from X-Forwarded-For
+```
+
+Clearing the database is irreversible, so `DELETE /api/logs` requires an explicit
+`?confirm=true`.
+
+---
+
+## Running the Test Suite
+
+The backend ships unit tests covering PII masking, URL validation, proxy
+helpers (SSE parsing, guardrails, token estimation), authentication, rate
+limiting, and evaluator queue concurrency:
+
+```bash
+npm test
+```
+
+To parse every server-side file without running it:
+
+```bash
+npm run lint
+```
+
+Both run in CI on every push and pull request.
 
 ---
 
