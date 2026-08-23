@@ -349,6 +349,9 @@ against `/api/health`.
 > ```bash
 > docker compose run --rm --user root infrasight chown -R node:node /app/data
 > ```
+> On **Windows in Git Bash**, MSYS rewrites `/app/data` into a Windows path and
+> the command fails with `cannot access 'C:/Program Files/Git/app/data'`. Either
+> prefix it with `MSYS_NO_PATHCONV=1`, or run it from PowerShell or CMD.
 
 Because the image sets `NODE_ENV=production`, starting it without an API key
 reports a configuration error rather than serving mock data. To run the

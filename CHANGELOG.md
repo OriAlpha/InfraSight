@@ -53,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Docker image now runs as the unprivileged `node` user and declares a
   `HEALTHCHECK`. Upgrading an existing deployment needs a one-off
   `chown -R node:node /app/data` on the `infrasight_data` volume; the server
-  reports this explicitly if the directory is not writable.
+  reports this explicitly if the directory is not writable. The README notes the
+  `MSYS_NO_PATHCONV=1` prefix Git Bash on Windows needs for that command.
 - `docker-compose.yml` no longer forces `MASK_PII=false`, which silently
   defeated PII masking in the deployment mode the README recommends. It also
   passes through the new hardening settings.
