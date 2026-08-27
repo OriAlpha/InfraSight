@@ -866,7 +866,7 @@ function DataManagementSection() {
   const handleClearAll = async () => {
     setClearing(true);
     try {
-      await fetchApi('/logs', { method: 'DELETE' });
+      await fetchApi('/logs', { method: 'DELETE', params: { confirm: 'true' } });
       setShowClear(false);
       window.location.reload();
     } catch (err) {

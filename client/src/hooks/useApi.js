@@ -45,7 +45,22 @@ export async function fetchApi(endpoint, options = {}) {
     } else {
       errMsg = errorData.message || `Request failed with status ${response.status}`;
     }
-    throw new Error(errMsg);
+
+    // Give the two responses the server can now produce a message the user can
+    // act on, instead of surfacing them as an opaque failure.
+    if (response.status === 401) {
+      errMsg = 'Not authorised. The dashboard requires sign-in — reload the page to enter your credentials.';
+    } else if (response.status === 429) {
+      const retryAfter = parseInt(response.headers.get('Retry-After'), 10);
+      errMsg = retryAfter > 0
+        ? `Rate limit reached. Try again in ${retryAfter}s.`
+        : 'Rate limit reached. Try again in a moment.';
+    }
+
+    const error = new Error(errMsg);
+    error.status = response.status;
+    error.details = errorData.error?.details;
+    throw error;
   }
 
   if (response.status === 204) {

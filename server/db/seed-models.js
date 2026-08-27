@@ -1,7 +1,11 @@
 /**
  * Seed script for the models table.
- * Populates DeepInfra model pricing data.
- * Safe to run multiple times (uses INSERT OR IGNORE).
+ * Populates baseline model pricing data.
+ *
+ * Idempotent: only models that are not already registered are inserted, so
+ * pricing edited through the dashboard survives a restart. Goes through the
+ * database adapter API rather than a driver directly, so it works on both the
+ * SQLite and PostgreSQL backends.
  *
  * Usage: node db/seed-models.js
  */
@@ -10,7 +14,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
-const { getDb, runMigrations } = require('./index');
+const { runMigrations, getModels, insertModel, closeDb } = require('./index');
 
 /** @type {Array<{id: string, name: string, display_name: string, provider: string, input_cost_per_million: number, output_cost_per_million: number, context_window: number}>} */
 const MODELS = [
@@ -62,40 +66,44 @@ const MODELS = [
 ];
 
 /**
- * Seeds the models table with DeepInfra pricing data.
+ * Ensures the baseline models are registered.
+ *
+ * Existing rows are left untouched — a model whose pricing was edited in the
+ * dashboard keeps that pricing, and custom models are never removed.
+ *
+ * @returns {Promise<{ inserted: number, skipped: number }>}
  */
-function seedModels() {
-  const db = getDb();
+async function seedModels() {
+  const existing = (await getModels()) || [];
+  const known = new Set(existing.map((m) => m.id));
 
-  // Clear existing models to ensure we only have the selected 5 models
-  db.prepare('DELETE FROM models').run();
+  let inserted = 0;
+  for (const model of MODELS) {
+    if (known.has(model.id)) continue;
+    await insertModel(model);
+    inserted++;
+  }
 
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO models (id, name, display_name, provider, input_cost_per_million, output_cost_per_million, context_window)
-    VALUES (@id, @name, @display_name, @provider, @input_cost_per_million, @output_cost_per_million, @context_window)
-  `);
+  const skipped = MODELS.length - inserted;
+  console.log(`[seed-models] ${inserted} model(s) added, ${skipped} already present.`);
 
-  const insertMany = db.transaction((models) => {
-    for (const model of models) {
-      insert.run(model);
-    }
-  });
-
-  insertMany(MODELS);
-  console.log(`[seed-models] Seeded ${MODELS.length} models into the database.`);
+  return { inserted, skipped };
 }
 
 // Run if invoked directly
 if (require.main === module) {
-  try {
-    runMigrations();
-    seedModels();
-    console.log('[seed-models] Done.');
-    process.exit(0);
-  } catch (err) {
-    console.error('[seed-models] Error:', err.message);
-    process.exit(1);
-  }
+  (async () => {
+    try {
+      await runMigrations();
+      await seedModels();
+      console.log('[seed-models] Done.');
+      await closeDb();
+      process.exit(0);
+    } catch (err) {
+      console.error('[seed-models] Error:', err.message);
+      process.exit(1);
+    }
+  })();
 }
 
 module.exports = { seedModels, MODELS };

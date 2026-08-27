@@ -32,8 +32,26 @@ jobs:
           npm run build
 
   backend:
-    name: Verify Backend
+    name: Test Backend
     runs-on: ubuntu-latest
+
+    # PostgreSQL mode was unstartable and CI had no way to notice. The adapter
+    # parity tests run against this instance.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: infrasight
+          POSTGRES_PASSWORD: infrasight
+          POSTGRES_DB: infrasight_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U infrasight"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -50,19 +68,65 @@ jobs:
           cd server
           npm ci
 
+      # Parses every file under server/ — no hand-maintained list to fall behind.
       - name: Verify syntax
+        run: node scripts/check-syntax.js
+
+      - name: Run unit tests
+        env:
+          TEST_DATABASE_URL: postgresql://infrasight:infrasight@localhost:5432/infrasight_test
         run: |
           cd server
-          node --check index.js
-          node --check proxy/index.js
-          node --check api/analytics.js
-          node --check api/conversations.js
-          node --check api/logs.js
-          node --check api/models.js
-          node --check api/prompts.js
-          node --check api/traces.js
-          node --check utils/pii.js
-          node --check db/seed-models.js
+          node --test
+
+      # Proves the server actually boots against PostgreSQL, which is how the
+      # seedModels() breakage would have been caught.
+      - name: Smoke test PostgreSQL startup
+        env:
+          DATABASE_URL: postgresql://infrasight:infrasight@localhost:5432/infrasight_test
+          PORT: '3123'
+          MOCK_MODE: 'true'
+        run: |
+          cd server
+          node index.js > /tmp/pg-boot.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS "http://localhost:3123/api/health" > /tmp/health.json 2>/dev/null; then
+              echo "Server is up."
+              cat /tmp/health.json
+              grep -q '"database":"PostgreSQL"' /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to start against PostgreSQL:"
+          cat /tmp/pg-boot.log
+          exit 1
+
+  docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Build image
+        run: docker build -t infrasight:ci .
+
+      - name: Verify the container starts and reports healthy
+        run: |
+          docker run -d --name infrasight-ci -p 3000:3000 -e MOCK_MODE=true infrasight:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/api/health > /dev/null 2>&1; then
+              echo "Container is serving."
+              docker exec infrasight-ci id
+              docker rm -f infrasight-ci
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Container failed to become healthy:"
+          docker logs infrasight-ci
+          exit 1
 
   python-tests:
     name: Verify Python Demos

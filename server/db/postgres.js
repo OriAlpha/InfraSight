@@ -7,6 +7,7 @@
 'use strict';
 
 const { Pool } = require('pg');
+const { buildProductionSection, reduceEvaluationRows } = require('./eval-metrics');
 const fs = require('fs');
 const path = require('path');
 
@@ -54,6 +55,31 @@ async function runMigrations() {
   const schemaPath = path.resolve(__dirname, 'postgres-schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf-8');
   await dbPool.query(schema);
+
+  // Supports the per-insert agent-metric rollup, which filters a trace by span type.
+  try {
+    await dbPool.query('CREATE INDEX IF NOT EXISTS idx_requests_trace_span_type ON requests(trace_id, span_type)');
+  } catch (err) {
+    console.error('[db/postgres] Could not create trace/span_type index:', err.message);
+  }
+}
+
+/**
+ * Drains and closes the connection pool.
+ *
+ * @returns {Promise<void>}
+ */
+async function closeDb() {
+  if (!pool) return;
+
+  const current = pool;
+  pool = null;
+
+  try {
+    await current.end();
+  } catch (err) {
+    console.error('[db/postgres] Error closing pool:', err.message);
+  }
 }
 
 // Helper to calculate default date ranges
@@ -430,41 +456,39 @@ async function getModelUsage(dateRange = {}) {
   return { data: res.rows };
 }
 
+/**
+ * Latency percentiles over time (p50, p95, p99, avg), computed in SQL rather
+ * than by loading every row in the window into memory.
+ *
+ * @param {Object} dateRange
+ * @returns {Promise<{ data: Array<{ date: string, p50: number, p95: number, p99: number, avg: number }> }>}
+ */
 async function getLatencyStats(dateRange = {}) {
   const client = getDb();
   const { startDate, endDate } = _defaultDateRange(dateRange.startDate, dateRange.endDate);
 
   const res = await client.query(`
-    SELECT SUBSTRING(created_at FROM 1 FOR 10) AS date, latency_ms
+    SELECT
+      SUBSTRING(created_at FROM 1 FOR 10) AS date,
+      PERCENTILE_DISC(0.50) WITHIN GROUP (ORDER BY latency_ms) AS p50,
+      PERCENTILE_DISC(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95,
+      PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99,
+      ROUND(AVG(latency_ms)) AS avg
     FROM requests
     WHERE created_at >= $1 AND created_at <= $2
       AND status != 'error'
-    ORDER BY date, latency_ms ASC
+    GROUP BY 1
+    ORDER BY 1 ASC
   `, [startDate, endDate]);
 
-  const groups = new Map();
-  for (const row of res.rows) {
-    if (!groups.has(row.date)) groups.set(row.date, []);
-    groups.get(row.date).push(row.latency_ms);
-  }
-
-  const percentile = (arr, p) => {
-    if (arr.length === 0) return 0;
-    const idx = Math.ceil((p / 100) * arr.length) - 1;
-    return arr[Math.max(0, idx)];
-  };
-
-  const data = [];
-  for (const [date, latencies] of groups) {
-    const sum = latencies.reduce((a, b) => a + b, 0);
-    data.push({
-      date,
-      p50: percentile(latencies, 50),
-      p95: percentile(latencies, 95),
-      p99: percentile(latencies, 99),
-      avg: Math.round(sum / latencies.length),
-    });
-  }
+  // pg returns numeric aggregates as strings; the API contract is numbers.
+  const data = res.rows.map((row) => ({
+    date: row.date,
+    p50: Number(row.p50) || 0,
+    p95: Number(row.p95) || 0,
+    p99: Number(row.p99) || 0,
+    avg: Number(row.avg) || 0,
+  }));
 
   return { data };
 }
@@ -627,40 +651,6 @@ async function insertModel(model) {
     model.output_cost_per_million || 0,
     model.context_window || null
   ]);
-  return { changes: res.rowCount };
-}
-
-async function updateDailyStats(date, model, data) {
-  const client = getDb();
-
-  const res = await client.query(`
-    INSERT INTO daily_stats (
-      date, model,
-      total_requests, total_tokens, total_prompt_tokens, total_completion_tokens,
-      total_cost, avg_latency_ms, error_count
-    ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9
-    )
-    ON CONFLICT(date, model) DO UPDATE SET
-      total_requests = EXCLUDED.total_requests,
-      total_tokens = EXCLUDED.total_tokens,
-      total_prompt_tokens = EXCLUDED.total_prompt_tokens,
-      total_completion_tokens = EXCLUDED.total_completion_tokens,
-      total_cost = EXCLUDED.total_cost,
-      avg_latency_ms = EXCLUDED.avg_latency_ms,
-      error_count = EXCLUDED.error_count
-  `, [
-    date,
-    model,
-    data.total_requests || 0,
-    data.total_tokens || 0,
-    data.total_prompt_tokens || 0,
-    data.total_completion_tokens || 0,
-    data.total_cost || 0,
-    data.avg_latency_ms || 0,
-    data.error_count || 0
-  ]);
-
   return { changes: res.rowCount };
 }
 
@@ -839,186 +829,69 @@ async function calculateAgentMetrics(traceId) {
   await client.query('UPDATE requests SET evaluation = $1 WHERE id = $2', [JSON.stringify(evalObj), rootSpan.id]);
 }
 
+/**
+ * Aggregates evaluation analytics metrics over a time range.
+ *
+ * Totals come from one aggregate query, and only the rows that actually carry
+ * feedback or evaluation JSON are fetched back. Previously every row in the
+ * window was loaded and reduced in JS, making a wide range an OOM risk.
+ *
+ * @param {Object} dateRange
+ * @returns {Promise<Object>}
+ */
 async function getEvaluationAnalytics(dateRange = {}) {
   const client = getDb();
   const { startDate, endDate } = _defaultDateRange(dateRange.startDate, dateRange.endDate);
 
-  const res = await client.query(`
-    SELECT 
-      id, status, latency_ms, prompt_tokens, completion_tokens, total_tokens, estimated_cost,
-      feedback, evaluation, created_at, span_type, parent_span_id, trace_id
+  const totalsRes = await client.query(`
+    SELECT
+      COUNT(*) AS "totalRequests",
+      COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS "failedRequests",
+      COALESCE(SUM(latency_ms), 0) AS "totalLatency",
+      COALESCE(SUM(estimated_cost), 0) AS "totalCost",
+      COALESCE(SUM(total_tokens), 0) AS "totalTokens"
     FROM requests
     WHERE created_at >= $1 AND created_at <= $2
   `, [startDate, endDate]);
 
-  const requests = res.rows;
-
-  const totalRequests = requests.length;
-  const failedRequests = requests.filter(r => r.status === 'error').length;
-  const errorRate = totalRequests > 0 ? (failedRequests / totalRequests) * 100 : 0;
-
-  let throughputMin = 0;
-  if (totalRequests > 0) {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const durationMs = Math.max(1000, end.getTime() - start.getTime());
-    const durationMin = durationMs / 60000;
-    throughputMin = totalRequests / durationMin;
-  }
-
-  let totalLatency = 0;
-  let totalCost = 0;
-  let totalTokens = 0;
-  for (const r of requests) {
-    totalLatency += r.latency_ms || 0;
-    totalCost += r.estimated_cost || 0;
-    totalTokens += r.total_tokens || 0;
-  }
-  const avgLatency = totalRequests > 0 ? totalLatency / totalRequests : 0;
-
-  let totalRatings = 0;
-  let ratingCount = 0;
-  let taskSuccessCount = 0;
-  let feedbackCount = 0;
-
-  let ragCount = 0;
-  let sumFaithfulness = 0;
-  let sumAnswerRelevancy = 0;
-  let sumContextPrecision = 0;
-  let sumContextRecall = 0;
-  let sumContextRelevance = 0;
-  let sumRecallAtK = 0;
-  let sumPrecisionAtK = 0;
-  let sumMRR = 0;
-
-  let nlpCount = 0;
-  let sumExactMatch = 0;
-  let sumF1Score = 0;
-  let sumRouge1 = 0;
-  let sumRouge2 = 0;
-  let sumRougeL = 0;
-  let sumBleu = 0;
-
-  let sumHallucinationRate = 0;
-  let hallucinationCount = 0;
-
-  let agentCount = 0;
-  let sumToolSuccessRate = 0;
-  let sumToolSelectionAccuracy = 0;
-  let sumPlanningAccuracy = 0;
-  let sumIterationCount = 0;
-  let sumGoalCompletionRate = 0;
-
-  for (const r of requests) {
-    if (r.feedback) {
-      try {
-        const f = JSON.parse(r.feedback);
-        if (f) {
-          feedbackCount++;
-          if (f.rating != null) {
-            totalRatings += Number(f.rating);
-            ratingCount++;
-          }
-          if (f.task_success === true) {
-            taskSuccessCount++;
-          }
-        }
-      } catch (e) {}
-    }
-
-    if (r.evaluation) {
-      try {
-        const ev = JSON.parse(r.evaluation);
-        if (ev) {
-          const hasRAG = ev.faithfulness != null || ev.answer_relevancy != null || ev.context_precision != null || ev.context_recall != null || ev.recall_at_k != null;
-          if (hasRAG) {
-            ragCount++;
-            if (ev.faithfulness != null) sumFaithfulness += Number(ev.faithfulness);
-            if (ev.answer_relevancy != null) sumAnswerRelevancy += Number(ev.answer_relevancy);
-            if (ev.context_precision != null) sumContextPrecision += Number(ev.context_precision);
-            if (ev.context_recall != null) sumContextRecall += Number(ev.context_recall);
-            if (ev.context_relevance != null) sumContextRelevance += Number(ev.context_relevance);
-            if (ev.recall_at_k != null) sumRecallAtK += Number(ev.recall_at_k);
-            if (ev.precision_at_k != null) sumPrecisionAtK += Number(ev.precision_at_k);
-            if (ev.mrr != null) sumMRR += Number(ev.mrr);
-          }
-
-          const hasNLP = ev.exact_match != null || ev.f1_score != null || ev.bleu != null;
-          if (hasNLP) {
-            nlpCount++;
-            if (ev.exact_match != null) sumExactMatch += Number(ev.exact_match);
-            if (ev.f1_score != null) sumF1Score += Number(ev.f1_score);
-            if (ev.rouge_1 != null) sumRouge1 += Number(ev.rouge_1);
-            if (ev.rouge_2 != null) sumRouge2 += Number(ev.rouge_2);
-            if (ev.rouge_l != null) sumRougeL += Number(ev.rouge_l);
-            if (ev.bleu != null) sumBleu += Number(ev.bleu);
-          }
-
-          if (ev.hallucination_rate != null) {
-            sumHallucinationRate += Number(ev.hallucination_rate);
-            hallucinationCount++;
-          }
-
-          const hasAgent = ev.iteration_count != null || ev.tool_success_rate != null;
-          if (hasAgent) {
-            agentCount++;
-            if (ev.tool_success_rate != null) sumToolSuccessRate += Number(ev.tool_success_rate);
-            if (ev.tool_selection_accuracy != null) sumToolSelectionAccuracy += Number(ev.tool_selection_accuracy);
-            if (ev.planning_accuracy != null) sumPlanningAccuracy += Number(ev.planning_accuracy);
-            if (ev.iteration_count != null) sumIterationCount += Number(ev.iteration_count);
-            if (ev.goal_completion_rate != null) sumGoalCompletionRate += Number(ev.goal_completion_rate);
-          }
-        }
-      } catch (e) {}
-    }
-  }
+  const scoredRes = await client.query(`
+    SELECT feedback, evaluation
+    FROM requests
+    WHERE created_at >= $1 AND created_at <= $2
+      AND (feedback IS NOT NULL OR evaluation IS NOT NULL)
+  `, [startDate, endDate]);
 
   return {
-    production: {
-      totalRequests,
-      failedRequests,
-      errorRate: Math.round(errorRate * 100) / 100,
-      throughput: Math.round(throughputMin * 100) / 100,
-      avgLatency: Math.round(avgLatency),
-      totalCost: Math.round(totalCost * 10000) / 10000,
-      totalTokens,
-    },
-    userFeedback: {
-      avgRating: ratingCount > 0 ? Math.round((totalRatings / ratingCount) * 10) / 10 : 0.0,
-      ratingCount,
-      taskSuccessRate: feedbackCount > 0 ? Math.round((taskSuccessCount / feedbackCount) * 100) : 0,
-      accuracy: nlpCount > 0 ? Math.round((sumExactMatch / nlpCount) * 100) : 0,
-    },
-    rag: {
-      faithfulness: ragCount > 0 && sumFaithfulness ? Math.round((sumFaithfulness / ragCount) * 10) / 10 : 0.0,
-      answerRelevancy: ragCount > 0 && sumAnswerRelevancy ? Math.round((sumAnswerRelevancy / ragCount) * 10) / 10 : 0.0,
-      contextPrecision: ragCount > 0 && sumContextPrecision ? Math.round((sumContextPrecision / ragCount) * 10) / 10 : 0.0,
-      contextRecall: ragCount > 0 && sumContextRecall ? Math.round((sumContextRecall / ragCount) * 10) / 10 : 0.0,
-      contextRelevance: ragCount > 0 && sumContextRelevance ? Math.round((sumContextRelevance / ragCount) * 10) / 10 : 0.0,
-      recallAtK: ragCount > 0 && sumRecallAtK ? Math.round((sumRecallAtK / ragCount) * 100) / 100 : 0.0,
-      precisionAtK: ragCount > 0 && sumPrecisionAtK ? Math.round((sumPrecisionAtK / ragCount) * 100) / 100 : 0.0,
-      mrr: ragCount > 0 && sumMRR ? Math.round((sumMRR / ragCount) * 100) / 100 : 0.0,
-    },
-    nlp: {
-      exactMatch: nlpCount > 0 ? Math.round((sumExactMatch / nlpCount) * 100) / 100 : 0.0,
-      f1Score: nlpCount > 0 ? Math.round((sumF1Score / nlpCount) * 100) / 100 : 0.0,
-      rouge1: nlpCount > 0 ? Math.round((sumRouge1 / nlpCount) * 100) / 100 : 0.0,
-      rouge2: nlpCount > 0 ? Math.round((sumRouge2 / nlpCount) * 100) / 100 : 0.0,
-      rougeL: nlpCount > 0 ? Math.round((sumRougeL / nlpCount) * 100) / 100 : 0.0,
-      bleu: nlpCount > 0 ? Math.round((sumBleu / nlpCount) * 100) / 100 : 0.0,
-    },
-    hallucination: {
-      hallucinationRate: hallucinationCount > 0 ? Math.round((sumHallucinationRate / hallucinationCount) * 100) / 100 : 0.0,
-      faithfulness: ragCount > 0 && sumFaithfulness ? Math.round((sumFaithfulness / ragCount) * 10) / 10 : 0.0,
-    },
-    agent: {
-      toolSuccessRate: agentCount > 0 ? Math.round((sumToolSuccessRate / agentCount) * 100) / 100 : 0.0,
-      toolSelectionAccuracy: agentCount > 0 ? Math.round((sumToolSelectionAccuracy / agentCount) * 100) / 100 : 0.0,
-      planningAccuracy: agentCount > 0 ? Math.round((sumPlanningAccuracy / agentCount) * 100) / 100 : 0.0,
-      avgIterations: agentCount > 0 ? Math.round((sumIterationCount / agentCount) * 10) / 10 : 0.0,
-      goalCompletionRate: agentCount > 0 ? Math.round((sumGoalCompletionRate / agentCount) * 100) / 100 : 0.0,
-    }
+    production: buildProductionSection(totalsRes.rows[0], startDate, endDate),
+    ...reduceEvaluationRows(scoredRes.rows),
   };
+}
+
+/**
+ * Finds successful requests that should carry an evaluation but do not.
+ * See the SQLite adapter for the rationale.
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.limit=100]
+ * @param {string} [opts.since]
+ * @returns {Promise<string[]>} Request ids, newest first
+ */
+async function getPendingEvaluationIds(opts = {}) {
+  const client = getDb();
+  const limit = Math.min(1000, Math.max(1, parseInt(opts.limit, 10) || 100));
+  const since = opts.since || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const res = await client.query(`
+    SELECT id FROM requests
+    WHERE evaluation IS NULL
+      AND status = 'success'
+      AND output_message IS NOT NULL
+      AND created_at >= $1
+    ORDER BY created_at DESC
+    LIMIT $2
+  `, [since, limit]);
+
+  return res.rows.map((r) => r.id);
 }
 
 async function getSetting(key) {
@@ -1178,6 +1051,7 @@ async function getSubsequentSpans(traceId, createdAt) {
 module.exports = {
   getDb,
   runMigrations,
+  closeDb,
   // Requests
   insertRequest,
   getRequests,
@@ -1199,8 +1073,6 @@ module.exports = {
   updateModelPricing,
   insertModel,
   recalculateCosts,
-  // Daily stats
-  updateDailyStats,
   // Prompts
   getPrompts,
   getPromptByName,
@@ -1221,6 +1093,7 @@ module.exports = {
   getToolSpansForTrace,
   // Logs helpers
   getRequestBySpanId,
+  getPendingEvaluationIds,
   clearAllLogs,
   updateTags,
   updateStatus,

@@ -15,8 +15,9 @@
  */
 'use strict';
 
-const { getRequestById, updateEvaluation, getToolSpansForTrace } = require('../db');
+const { getRequestById, updateEvaluation, getToolSpansForTrace, getPendingEvaluationIds } = require('../db');
 const { getConfig } = require('../utils/config');
+const { createTaskQueue } = require('./task-queue');
 
 const EVALUATOR_MODEL = 'meta-llama/Meta-Llama-3.1-8B-Instruct';
 
@@ -45,49 +46,92 @@ async function getEvaluatorUrl() {
   return 'https://api.deepinfra.com/v1/openai/chat/completions';
 }
 
-const queue = [];
-let activeWorkers = 0;
+/**
+ * Resolves the configured concurrency limit.
+ * @returns {Promise<number>}
+ */
+async function resolveConcurrencyLimit() {
+  const limitStr = (await getConfig('EVALUATION_CONCURRENCY')) || process.env.EVALUATION_CONCURRENCY;
+  const limit = parseInt(limitStr, 10);
+  return Number.isFinite(limit) && limit > 0 ? limit : 3;
+}
+
+const queue = createTaskQueue({
+  run: (requestId) => performEvaluation(requestId),
+  getLimit: resolveConcurrencyLimit,
+  onError: (err, requestId) =>
+    console.error(`[evaluator] Error running evaluation for request ${requestId}:`, err.message),
+});
 
 /**
  * Triggers an asynchronous evaluation for a logged request.
- * Enqueues the request and runs background task workers with concurrency limits.
+ *
  * @param {string} requestId - The UUID of the request to evaluate
  */
 function queueEvaluation(requestId) {
-  if (!queue.includes(requestId)) {
-    queue.push(requestId);
-  }
-  // Process the queue asynchronously
-  setImmediate(processQueue);
+  queue.push(requestId);
 }
 
 /**
- * Process queue runner with concurrency control.
+ * Waits for in-flight and queued evaluations to finish, so a shutdown does not
+ * discard results that were about to be written.
+ *
+ * @param {number} [timeoutMs=5000] - Give up after this long
+ * @returns {Promise<boolean>} True if the queue drained, false on timeout
  */
-async function processQueue() {
-  const limitStr = (await getConfig('EVALUATION_CONCURRENCY')) || process.env.EVALUATION_CONCURRENCY;
-  const limit = parseInt(limitStr, 10) || 3;
+function drainEvaluations(timeoutMs = 5000) {
+  return queue.drain(timeoutMs);
+}
 
-  if (activeWorkers >= limit || queue.length === 0) {
-    return;
+/**
+ * Current queue depth and worker count. Exposed for diagnostics.
+ * @returns {{ pending: number, active: number }}
+ */
+function getQueueStats() {
+  return queue.stats();
+}
+
+/**
+ * Re-queues requests that were logged but never scored.
+ *
+ * The work queue lives in memory, so anything pending when the process stopped
+ * would otherwise be lost. Rather than persisting the queue, this asks the
+ * database which recent successful requests still have no evaluation.
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.limit] - Cap on requests to recover; 0 disables recovery
+ * @param {number} [opts.lookbackHours] - How far back to look
+ * @returns {Promise<number>} How many requests were re-queued
+ */
+async function recoverPendingEvaluations(opts = {}) {
+  const limit = opts.limit != null
+    ? opts.limit
+    : parseInt(process.env.EVALUATION_RECOVERY_LIMIT, 10) || 100;
+
+  if (!limit || limit <= 0) {
+    return 0;
   }
 
-  activeWorkers++;
-  const requestId = queue.shift();
+  const lookbackHours = opts.lookbackHours != null
+    ? opts.lookbackHours
+    : parseInt(process.env.EVALUATION_RECOVERY_HOURS, 10) || 24;
 
   try {
-    await performEvaluation(requestId);
-  } catch (err) {
-    console.error(`[evaluator] Error running evaluation for request ${requestId}:`, err.message);
-  } finally {
-    activeWorkers--;
-    // Check if more tasks can be run
-    setImmediate(processQueue);
-  }
+    const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
+    const ids = await getPendingEvaluationIds({ limit, since });
 
-  // Parallelize if capacity remains and queue has tasks
-  if (queue.length > 0 && activeWorkers < limit) {
-    setImmediate(processQueue);
+    for (const id of ids) {
+      queue.push(id);
+    }
+
+    if (ids.length > 0) {
+      console.log(`[evaluator] Re-queued ${ids.length} unscored request(s) from the last ${lookbackHours}h.`);
+    }
+
+    return ids.length;
+  } catch (err) {
+    console.error('[evaluator] Could not recover pending evaluations:', err.message);
+    return 0;
   }
 }
 
@@ -669,4 +713,7 @@ ${expectedAnswer}`;
 
 module.exports = {
   queueEvaluation,
+  drainEvaluations,
+  getQueueStats,
+  recoverPendingEvaluations,
 };

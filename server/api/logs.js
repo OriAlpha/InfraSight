@@ -244,9 +244,27 @@ router.delete('/:id', async (req, res) => {
 /**
  * DELETE /api/logs
  * Clear all logs, conversations, and daily stats.
+ *
+ * Irreversible, so it requires an explicit confirmation: `?confirm=true` or a
+ * JSON body of `{ "confirm": true }`. This keeps a stray DELETE against the
+ * collection root from wiping the database.
  */
 router.delete('/', async (req, res) => {
   try {
+    const confirmed = req.query.confirm === 'true'
+      || (req.body && req.body.confirm === true);
+
+    if (!confirmed) {
+      return res.status(400).json({
+        error: {
+          message: 'Refusing to clear all logs without confirmation. '
+            + 'Repeat the request with ?confirm=true to proceed.',
+          type: 'confirmation_required',
+          code: 'confirmation_required',
+        }
+      });
+    }
+
     await clearAllLogs();
     res.json({ success: true, message: 'All logs cleared successfully' });
   } catch (err) {

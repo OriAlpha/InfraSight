@@ -17,9 +17,31 @@ const { Router } = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { insertRequest, updateEvaluation } = require('../db');
 const { queueEvaluation } = require('../services/evaluator');
-const { maskPii, maskString } = require('../utils/pii');
+const { maskPii } = require('../utils/pii');
 const { getConfig } = require('../utils/config');
 const { sendWebhookAlert } = require('../utils/alerts');
+const { assertSafeUpstreamUrl } = require('../utils/url-guard');
+const {
+  applyGuardrails,
+  parseSSEChunks,
+  estimateTokens,
+  getTargetUrl,
+  withUsageStreamOptions,
+} = require('./lib');
+
+/** Tracks one-time warnings so a misconfiguration is logged once, not per request. */
+const warnedOnce = new Set();
+
+/**
+ * Logs a warning the first time it is raised for a given key.
+ * @param {string} key
+ * @param {string} message
+ */
+function warnOnce(key, message) {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(message);
+}
 
 const router = Router();
 
@@ -50,6 +72,43 @@ async function getProxyConfig() {
   const upstreamKey = await getConfig('UPSTREAM_API_KEY');
   const apiKey = upstreamKey || process.env.DEEPINFRA_API_KEY;
 
+  // A key that is absent or still set to an example placeholder cannot be used.
+  const hasUsableKey = Boolean(apiKey)
+    && !apiKey.includes('invalid-or-missing-key')
+    && !apiKey.includes('placeholder')
+    && !apiKey.includes('your_');
+
+  // Mock mode must be a deliberate choice in production: silently answering with
+  // fabricated completions (and a 30% synthetic error rate) would otherwise look
+  // like a working deployment.
+  const mockSetting = ((await getConfig('MOCK_MODE')) || '').toLowerCase();
+  let useMock;
+  if (mockSetting === 'true') {
+    useMock = true;
+  } else if (mockSetting === 'false') {
+    useMock = false;
+  } else {
+    useMock = !hasUsableKey && process.env.NODE_ENV !== 'production';
+    if (useMock) {
+      warnOnce(
+        'auto-mock',
+        '[proxy] No usable upstream API key found — serving MOCK completions. '
+        + 'Set UPSTREAM_API_KEY for real traffic, or MOCK_MODE=true to silence this warning.'
+      );
+    }
+  }
+
+  // The upstream base URL is operator-settable at runtime through the dashboard.
+  let configError = null;
+  try {
+    assertSafeUpstreamUrl(upstreamBaseUrl);
+  } catch (err) {
+    configError = err.message;
+  }
+
+  const streamUsageSetting = await getConfig('STREAM_USAGE_INJECTION');
+  const streamUsageInjection = streamUsageSetting !== 'false';
+
   return {
     upstreamBaseUrl,
     providerName,
@@ -59,6 +118,10 @@ async function getProxyConfig() {
     activePiiRedaction,
     bannedKeywordsStr,
     apiKey,
+    hasUsableKey,
+    useMock,
+    streamUsageInjection,
+    configError,
   };
 }
 
@@ -80,27 +143,6 @@ function getLogPayload(data, type, cfg) {
     return { info: 'Payload logging disabled' };
   }
   return cfg.maskPiiEnabled ? maskPii(data) : data;
-}
-
-/**
- * Builds the full upstream URL for a given proxy path.
- * @param {string} targetPath
- * @param {Object} cfg - Proxy config
- * @returns {string} Fully-qualified upstream URL
- */
-function getTargetUrl(targetPath, cfg) {
-  if (cfg.providerName === 'deepinfra') {
-    return `${cfg.upstreamBaseUrl}/${targetPath}`;
-  }
-  let normalizedPath = targetPath;
-  if (normalizedPath.startsWith('v1/openai/')) {
-    normalizedPath = normalizedPath.slice('v1/openai/'.length);
-  } else if (normalizedPath.startsWith('v1/')) {
-    if (cfg.upstreamBaseUrl.replace(/\/+$/, '').endsWith('/v1')) {
-      normalizedPath = normalizedPath.slice('v1/'.length);
-    }
-  }
-  return `${cfg.upstreamBaseUrl.replace(/\/+$/, '')}/${normalizedPath}`;
 }
 
 let modelsCache = null;
@@ -151,54 +193,48 @@ async function estimateCost(model, promptTokens, completionTokens) {
  * @returns {string|undefined}
  */
 function getAuthHeader(req, cfg) {
-  if (req.headers.authorization) {
-    return req.headers.authorization;
+  const inbound = req.headers.authorization;
+
+  // Pass a caller's own provider token through, but never the dashboard's Basic
+  // credentials — those would otherwise be sent to the upstream provider.
+  if (inbound && !/^basic\s/i.test(inbound)) {
+    return inbound;
   }
+
   if (cfg.apiKey) {
     return `Bearer ${cfg.apiKey}`;
   }
+
   return undefined;
 }
 
 /**
- * Parses accumulated SSE chunks to extract the final assistant message and usage data.
- * @param {string[]} chunks
- * @returns {{ content: string, usage: { prompt_tokens: number, completion_tokens: number, total_tokens: number } | null, finishReason: string|null }}
+ * Builds an AbortSignal that fires when either the client goes away or the
+ * upstream call exceeds its timeout, so an abandoned request does not keep a
+ * connection (and its response stream) alive server-side.
+ *
+ * @param {import('express').Request} req
+ * @param {number} [timeoutMs=120000]
+ * @returns {{ signal: AbortSignal, cleanup: () => void }}
  */
-function parseSSEChunks(chunks) {
-  let content = '';
-  let usage = null;
-  let finishReason = null;
+function createUpstreamSignal(req, timeoutMs = 120000) {
+  const controller = new AbortController();
 
-  for (const chunk of chunks) {
-    if (chunk === '[DONE]') continue;
+  const onClose = () => controller.abort(new Error('Client closed the connection'));
+  const timer = setTimeout(
+    () => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)),
+    timeoutMs
+  );
 
-    try {
-      const parsed = JSON.parse(chunk);
+  req.on('close', onClose);
 
-      if (parsed.choices && parsed.choices.length > 0) {
-        const choice = parsed.choices[0];
-        if (choice.delta && choice.delta.content) {
-          content += choice.delta.content;
-        }
-        if (choice.finish_reason) {
-          finishReason = choice.finish_reason;
-        }
-      }
-
-      if (parsed.usage) {
-        usage = {
-          prompt_tokens: parsed.usage.prompt_tokens || 0,
-          completion_tokens: parsed.usage.completion_tokens || 0,
-          total_tokens: parsed.usage.total_tokens || 0,
-        };
-      }
-    } catch {
-      // Skip
-    }
-  }
-
-  return { content, usage, finishReason };
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      req.off('close', onClose);
+    },
+  };
 }
 
 /**
@@ -486,6 +522,7 @@ async function handleNonStreamingRequest(req, res, targetUrl, requestBody, cfg) 
   const requestId = uuidv4();
   const startTime = Date.now();
   const spanStatus = req.headers['x-span-status'] || requestBody.span_status || null;
+  const upstream = createUpstreamSignal(req);
 
   try {
     const headers = {
@@ -498,7 +535,7 @@ async function handleNonStreamingRequest(req, res, targetUrl, requestBody, cfg) 
       method: req.method,
       headers,
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(120000),
+      signal: upstream.signal,
     });
 
     const latencyMs = Date.now() - startTime;
@@ -516,16 +553,12 @@ async function handleNonStreamingRequest(req, res, targetUrl, requestBody, cfg) 
         : null;
 
       if (promptTokens === 0 && completionTokens === 0) {
-        let promptChars = 0;
-        if (Array.isArray(requestBody.messages)) {
-          requestBody.messages.forEach(m => {
-            promptChars += (m.content || '').length;
-            promptChars += (m.role || '').length;
-          });
-        }
-        promptTokens = Math.max(1, Math.ceil(promptChars / 4));
-        const outputText = outputMessage ? (typeof outputMessage === 'string' ? outputMessage : outputMessage.content || '') : '';
-        completionTokens = Math.max(1, Math.ceil(outputText.length / 4));
+        const outputText = outputMessage
+          ? (typeof outputMessage === 'string' ? outputMessage : outputMessage.content || '')
+          : '';
+        const estimated = estimateTokens(requestBody.messages, outputText);
+        promptTokens = estimated.promptTokens;
+        completionTokens = estimated.completionTokens;
       }
 
       const totalTokens = usage.total_tokens || promptTokens + completionTokens;
@@ -645,6 +678,8 @@ async function handleNonStreamingRequest(req, res, targetUrl, requestBody, cfg) 
     if (!res.headersSent) {
       res.status(502).json({ error: { message: 'Proxy error: ' + err.message } });
     }
+  } finally {
+    upstream.cleanup();
   }
 }
 
@@ -655,6 +690,7 @@ async function handleStreamingRequest(req, res, targetUrl, requestBody, cfg) {
   const requestId = uuidv4();
   const startTime = Date.now();
   const spanStatus = req.headers['x-span-status'] || requestBody.span_status || null;
+  const upstream = createUpstreamSignal(req);
 
   try {
     const headers = {
@@ -667,7 +703,7 @@ async function handleStreamingRequest(req, res, targetUrl, requestBody, cfg) {
       method: req.method,
       headers,
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(120000),
+      signal: upstream.signal,
     });
 
     if (!response.ok) {
@@ -785,15 +821,9 @@ async function handleStreamingRequest(req, res, targetUrl, requestBody, cfg) {
       let completionTokens = usage ? usage.completion_tokens : 0;
 
       if (!usage) {
-        let promptChars = 0;
-        if (Array.isArray(requestBody.messages)) {
-          requestBody.messages.forEach(m => {
-            promptChars += (m.content || '').length;
-            promptChars += (m.role || '').length;
-          });
-        }
-        promptTokens = Math.max(1, Math.ceil(promptChars / 4));
-        completionTokens = Math.max(1, Math.ceil((content || '').length / 4));
+        const estimated = estimateTokens(requestBody.messages, content);
+        promptTokens = estimated.promptTokens;
+        completionTokens = estimated.completionTokens;
       }
 
       const totalTokens = usage ? usage.total_tokens : promptTokens + completionTokens;
@@ -911,6 +941,8 @@ async function handleStreamingRequest(req, res, targetUrl, requestBody, cfg) {
     } else {
       res.end();
     }
+  } finally {
+    upstream.cleanup();
   }
 }
 
@@ -924,36 +956,28 @@ function runInputGuardrails(req, res, requestBody, cfg) {
     return false;
   }
 
-  const bannedKeywords = cfg.bannedKeywordsStr.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+  const bannedKeywords = cfg.bannedKeywordsStr
+    .split(',')
+    .map(k => k.trim().toLowerCase())
+    .filter(Boolean);
 
-  for (const msg of requestBody.messages) {
-    const content = (msg.content || '').toLowerCase();
-    for (const keyword of bannedKeywords) {
-      if (content.includes(keyword)) {
-        res.status(400).json({
-          error: {
-            message: `Request blocked by InfraSight Guardrails: Banned content detected (keyword: "${keyword}").`,
-            type: 'guardrails_validation_error',
-            code: 'content_blocked'
-          }
-        });
-        return true;
-      }
-    }
-  }
+  const result = applyGuardrails(requestBody.messages, {
+    bannedKeywords,
+    activePiiRedaction: cfg.activePiiRedaction,
+  });
 
-  if (cfg.activePiiRedaction) {
-    requestBody.messages = requestBody.messages.map(msg => {
-      if (typeof msg.content === 'string') {
-        return {
-          ...msg,
-          content: maskString(msg.content)
-        };
+  if (result.blocked) {
+    res.status(400).json({
+      error: {
+        message: `Request blocked by InfraSight Guardrails: Banned content detected (keyword: "${result.keyword}").`,
+        type: 'guardrails_validation_error',
+        code: 'content_blocked'
       }
-      return msg;
     });
+    return true;
   }
 
+  requestBody.messages = result.messages;
   return false;
 }
 
@@ -963,10 +987,23 @@ function runInputGuardrails(req, res, requestBody, cfg) {
 
 router.all('/*', async (req, res) => {
   const cfg = await getProxyConfig();
+
+  if (cfg.configError) {
+    console.error('[proxy] Refusing to forward request:', cfg.configError);
+    return res.status(502).json({
+      error: {
+        message: `Invalid upstream configuration: ${cfg.configError}`,
+        type: 'configuration_error',
+        code: 'invalid_upstream_url',
+      }
+    });
+  }
+
   const targetPath = req.params[0] || '';
   const targetUrl = getTargetUrl(targetPath, cfg);
 
   if (req.method !== 'POST' || !req.body || typeof req.body !== 'object') {
+    const passThrough = createUpstreamSignal(req, 30000);
     try {
       const headers = {};
       const auth = getAuthHeader(req, cfg);
@@ -976,6 +1013,7 @@ router.all('/*', async (req, res) => {
       const fetchOptions = {
         method: req.method,
         headers,
+        signal: passThrough.signal,
       };
 
       if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
@@ -1000,6 +1038,8 @@ router.all('/*', async (req, res) => {
       if (!res.headersSent) {
         res.status(502).json({ error: { message: 'Proxy error: ' + err.message } });
       }
+    } finally {
+      passThrough.cleanup();
     }
     return;
   }
@@ -1011,12 +1051,26 @@ router.all('/*', async (req, res) => {
   }
 
   const isStreaming = requestBody.stream === true;
-  const isMockMode = !cfg.apiKey || cfg.apiKey.includes('invalid-or-missing-key') || cfg.apiKey.includes('placeholder');
 
-  if (isMockMode) {
+  if (cfg.useMock) {
     await handleMockRequest(req, res, requestBody, cfg);
-  } else if (isStreaming) {
-    await handleStreamingRequest(req, res, targetUrl, requestBody, cfg);
+    return;
+  }
+
+  if (!cfg.hasUsableKey) {
+    res.status(502).json({
+      error: {
+        message: 'No usable upstream API key is configured. Set UPSTREAM_API_KEY '
+          + '(or DEEPINFRA_API_KEY), or set MOCK_MODE=true to serve simulated completions.',
+        type: 'configuration_error',
+        code: 'missing_api_key',
+      }
+    });
+    return;
+  }
+
+  if (isStreaming) {
+    await handleStreamingRequest(req, res, targetUrl, withUsageStreamOptions(requestBody), cfg);
   } else {
     await handleNonStreamingRequest(req, res, targetUrl, requestBody, cfg);
   }
