@@ -7,8 +7,15 @@ InfraSight is a lightweight, provider-agnostic observability platform and transp
 
 ## High-Level Workflow
 
+<p align="center">
+  <img src="assets/architecture.svg" alt="InfraSight Architecture Workflow" width="100%" />
+</p>
+
+<details>
+<summary><b>View Architecture Diagram Source (Mermaid)</b></summary>
+
 ```mermaid
-flowchart LR
+flowchart TD
     %% Styling Palette
     classDef client fill:#1e1b4b,stroke:#6366f1,stroke-width:2px,color:#fff;
     classDef proxy fill:#0f172a,stroke:#06b6d4,stroke-width:2.5px,color:#fff;
@@ -17,18 +24,17 @@ flowchart LR
     classDef ui fill:#3b0764,stroke:#a855f7,stroke-width:2px,color:#fff;
 
     subgraph Clients ["  1. CLIENTS & AGENTS  "]
-        direction TB
+        direction LR
         C1["OpenAI SDK (Python / TS)"]:::client
         C2["LangChain & LlamaIndex"]:::client
         C3["Direct REST / cURL"]:::client
     end
 
-    subgraph Gateway ["  2. INFRASIGHT PROXY  "]
-        direction TB
+    subgraph Gateway ["  2. INFRASIGHT PROXY GATEWAY  "]
+        direction LR
         G1["⚡ Transparent Proxy Router"]:::proxy
         G2["🛡️ PII Masking & Guardrails"]:::proxy
-        G3["⏱️ Latency & TTFT Tracker"]:::proxy
-        G1 --> G2 --> G3
+        G3["⏱️ TTFT & Latency Tracker"]:::proxy
     end
 
     subgraph Upstream ["  3. UPSTREAM PROVIDERS  "]
@@ -40,20 +46,18 @@ flowchart LR
 
     subgraph Observability ["  4. ZERO-OVERHEAD OBSERVABILITY PLATFORM  "]
         direction TB
-        O1["📊 Latency Flow (TTFT, Decode Speed & Breakdown)"]:::feature
-        O2["🧠 LLM-as-a-Judge (Automated Quality & RAG Scoring)"]:::feature
-        O3["🔀 Distributed Traces (Nested Agent Spans & Tool Calls)"]:::feature
-        O4["🖥️ Real-Time Web Dashboard & Alerting (Slack/Discord)"]:::ui
+        O1["📊 Latency Flow (TTFT & Decode Rate)"]:::feature
+        O2["🧠 LLM-as-a-Judge (Automated Quality)"]:::feature
+        O3["🔀 Distributed Traces (Nested Spans)"]:::feature
+        O4["🖥️ Web Dashboard & Alerts (Slack/Discord)"]:::ui
         O1 & O2 & O3 --> O4
     end
 
     Clients ==>|"1. Standard API Request"| Gateway
-    Gateway ==>|"2. Filtered & Routed"| Upstream
-    Upstream -->|"3. Streaming Tokens"| Gateway
-    Gateway -->|"4. Instant Return (Zero Added Latency)"| Clients
-
-    Gateway -...->|"Async Telemetry & Spans"| Observability
+    Gateway <==>|"2. Forward & Stream Response"| Upstream
+    Gateway -.->|"3. Async Non-Blocking Telemetry"| Observability
 ```
+</details>
 
 ### 🔌 1-Line Drop-In Integration
 InfraSight works with your existing code. Simply repoint `base_url`:

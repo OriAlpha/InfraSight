@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 680" width="100%" height="100%" style="background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="clientGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b" />
+      <stop offset="100%" stop-color="#2e1065" />
+    </linearGradient>
+    <linearGradient id="proxyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+    <linearGradient id="llmGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b" />
+      <stop offset="100%" stop-color="#022c22" />
+    </linearGradient>
+    <linearGradient id="obsGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.9" />
+    </linearGradient>
+
+    <!-- Arrow Markers -->
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#818cf8" />
+    </marker>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#06b6d4" />
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#a855f7" />
+    </marker>
+  </defs>
+
+  <style>
+    .subgraph-title { font-size: 13px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; }
+    .card-title { font-size: 14px; font-weight: 600; fill: #f8fafc; }
+    .card-desc { font-size: 12px; fill: #94a3b8; }
+    .arrow-text { font-size: 12px; font-weight: 600; }
+  </style>
+
+  <!-- ================= 1. CLIENTS & AGENTS (TOP) ================= -->
+  <g transform="translate(60, 25)">
+    <rect width="980" height="110" rx="14" fill="url(#clientGrad)" stroke="#6366f1" stroke-width="2" />
+    <text x="30" y="32" class="subgraph-title" fill="#a5b4fc">1. CLIENT APPLICATIONS &amp; AGENT FRAMEWORKS</text>
+
+    <!-- Card 1 -->
+    <rect x="30" y="46" width="295" height="50" rx="8" fill="url(#cardGrad)" stroke="#4338ca" stroke-width="1" />
+    <text x="45" y="68" class="card-title">🐍 OpenAI SDK (Python / TS)</text>
+    <text x="45" y="86" class="card-desc">Set base_url="http://localhost:3000/api/proxy/v1"</text>
+
+    <!-- Card 2 -->
+    <rect x="342" y="46" width="295" height="50" rx="8" fill="url(#cardGrad)" stroke="#4338ca" stroke-width="1" />
+    <text x="357" y="68" class="card-title">🦜🔗 LangChain &amp; LlamaIndex</text>
+    <text x="357" y="86" class="card-desc">Multi-agent pipelines, RAG chains &amp; tools</text>
+
+    <!-- Card 3 -->
+    <rect x="655" y="46" width="295" height="50" rx="8" fill="url(#cardGrad)" stroke="#4338ca" stroke-width="1" />
+    <text x="670" y="68" class="card-title">🌐 REST / cURL / Any Client</text>
+    <text x="670" y="86" class="card-desc">Standard /v1/chat/completions payload</text>
+  </g>
+
+  <!-- Arrow: Client -> Gateway -->
+  <path d="M 550 135 L 550 185" stroke="#818cf8" stroke-width="3" marker-end="url(#arrowIndigo)" />
+  <rect x="420" y="147" width="260" height="24" rx="12" fill="#0f172a" stroke="#6366f1" stroke-width="1" />
+  <text x="550" y="163" text-anchor="middle" class="arrow-text" fill="#c7d2fe">1. Standard OpenAI API Request</text>
+
+  <!-- ================= 2. INFRASIGHT PROXY GATEWAY (MIDDLE) ================= -->
+  <g transform="translate(60, 185)">
+    <rect width="980" height="130" rx="14" fill="url(#proxyGrad)" stroke="#06b6d4" stroke-width="2.5" />
+    <text x="30" y="32" class="subgraph-title" fill="#22d3ee">2. INFRASIGHT TRANSPARENT PROXY GATEWAY</text>
+
+    <!-- Gateway Feature 1 -->
+    <rect x="30" y="48" width="295" height="66" rx="8" fill="#1e293b" stroke="#0891b2" stroke-width="1" />
+    <text x="45" y="73" class="card-title">⚡ Transparent Proxy Router</text>
+    <text x="45" y="93" class="card-desc">Zero added latency • SSE stream passthrough</text>
+    <text x="45" y="106" class="card-desc">Auto-routes to any OpenAI-compatible provider</text>
+
+    <!-- Gateway Feature 2 -->
+    <rect x="342" y="48" width="295" height="66" rx="8" fill="#1e293b" stroke="#0891b2" stroke-width="1" />
+    <text x="357" y="73" class="card-title">🛡️ Active Guardrails &amp; Masking</text>
+    <text x="357" y="93" class="card-desc">Automatic PII redaction (email, phone, card)</text>
+    <text x="357" y="106" class="card-desc">Banned keyword blocking &amp; security filter</text>
+
+    <!-- Gateway Feature 3 -->
+    <rect x="655" y="48" width="295" height="66" rx="8" fill="#1e293b" stroke="#0891b2" stroke-width="1" />
+    <text x="670" y="73" class="card-title">⏱️ Latency &amp; TTFT Profiler</text>
+    <text x="670" y="93" class="card-desc">Precise Time to First Token (TTFT) tracking</text>
+    <text x="670" y="106" class="card-desc">Tokens/sec decode rate &amp; duration recorder</text>
+  </g>
+
+  <!-- Arrow: Gateway -> Upstream (Left Bottom) -->
+  <path d="M 280 315 L 280 380" stroke="#10b981" stroke-width="3" marker-end="url(#arrowEmerald)" />
+  <rect x="175" y="335" width="210" height="24" rx="12" fill="#064e3b" stroke="#10b981" stroke-width="1" />
+  <text x="280" y="351" text-anchor="middle" class="arrow-text" fill="#a7f3d0">2. Route &amp; Stream Tokens</text>
+
+  <!-- Arrow: Gateway -> Observability (Right Bottom) -->
+  <path d="M 760 315 L 760 380" stroke="#a855f7" stroke-width="2.5" stroke-dasharray="6,4" marker-end="url(#arrowPurple)" />
+  <rect x="625" y="335" width="270" height="24" rx="12" fill="#3b0764" stroke="#a855f7" stroke-width="1" />
+  <text x="760" y="351" text-anchor="middle" class="arrow-text" fill="#f3e8ff">3. Async Telemetry (Zero Added Latency)</text>
+
+  <!-- ================= 3. UPSTREAM PROVIDERS (BOTTOM LEFT) ================= -->
+  <g transform="translate(60, 380)">
+    <rect width="440" height="265" rx="14" fill="url(#llmGrad)" stroke="#10b981" stroke-width="2" />
+    <text x="25" y="32" class="subgraph-title" fill="#6ee7b7">3. UPSTREAM LLM PROVIDERS</text>
+
+    <!-- Provider 1 -->
+    <rect x="25" y="48" width="390" height="60" rx="8" fill="#022c22" stroke="#059669" stroke-width="1" />
+    <text x="40" y="73" class="card-title">🚀 DeepInfra &amp; Together AI</text>
+    <text x="40" y="93" class="card-desc">Llama 3.1 / 3.3, Mistral, Qwen 2.5, DeepSeek</text>
+
+    <!-- Provider 2 -->
+    <rect x="25" y="118" width="390" height="60" rx="8" fill="#022c22" stroke="#059669" stroke-width="1" />
+    <text x="40" y="143" class="card-title">🌐 OpenAI, Groq &amp; Anthropic</text>
+    <text x="40" y="163" class="card-desc">GPT-4o, Claude 3.5 Sonnet, ultra-fast LPUs</text>
+
+    <!-- Provider 3 -->
+    <rect x="25" y="188" width="390" height="60" rx="8" fill="#022c22" stroke="#059669" stroke-width="1" />
+    <text x="40" y="213" class="card-title">💻 Local Ollama &amp; vLLM</text>
+    <text x="40" y="233" class="card-desc">Air-gapped on-premise &amp; self-hosted inference</text>
+  </g>
+
+  <!-- ================= 4. OBSERVABILITY PLATFORM (BOTTOM RIGHT) ================= -->
+  <g transform="translate(530, 380)">
+    <rect width="510" height="265" rx="14" fill="url(#obsGrad)" stroke="#8b5cf6" stroke-width="2" />
+    <text x="25" y="32" class="subgraph-title" fill="#c4b5fd">4. ZERO-OVERHEAD OBSERVABILITY PLATFORM</text>
+
+    <!-- Feature 1 -->
+    <rect x="25" y="48" width="220" height="95" rx="8" fill="#1e1b4b" stroke="#6366f1" stroke-width="1" />
+    <text x="37" y="73" class="card-title">📊 Latency Flow</text>
+    <text x="37" y="93" class="card-desc">• TTFT &amp; token decode rate</text>
+    <text x="37" y="111" class="card-desc">• Client RTT vs upstream</text>
+    <text x="37" y="129" class="card-desc">• Interactive timeline view</text>
+
+    <!-- Feature 2 -->
+    <rect x="265" y="48" width="220" height="95" rx="8" fill="#1e1b4b" stroke="#6366f1" stroke-width="1" />
+    <text x="277" y="73" class="card-title">🧠 LLM-as-a-Judge</text>
+    <text x="277" y="93" class="card-desc">• Faithfulness &amp; relevancy</text>
+    <text x="277" y="111" class="card-desc">• Automated quality 1-5 score</text>
+    <text x="277" y="129" class="card-desc">• Production evaluation queue</text>
+
+    <!-- Feature 3 -->
+    <rect x="25" y="153" width="220" height="95" rx="8" fill="#1e1b4b" stroke="#6366f1" stroke-width="1" />
+    <text x="37" y="178" class="card-title">🔀 Distributed Traces</text>
+    <text x="37" y="198" class="card-desc">• Nested multi-span waterfalls</text>
+    <text x="37" y="216" class="card-desc">• Tool calls &amp; retrieval spans</text>
+    <text x="37" y="234" class="card-desc">• Multi-turn session replays</text>
+
+    <!-- Feature 4 -->
+    <rect x="265" y="153" width="220" height="95" rx="8" fill="#3b0764" stroke="#a855f7" stroke-width="1.5" />
+    <text x="277" y="178" class="card-title">🖥️ Web UI &amp; Alerts</text>
+    <text x="277" y="198" class="card-desc">• Real-time React dashboard</text>
+    <text x="277" y="216" class="card-desc">• Task type dropdown filters</text>
+    <text x="277" y="234" class="card-desc">• Slack &amp; Discord webhooks</text>
+  </g>
+</svg>
