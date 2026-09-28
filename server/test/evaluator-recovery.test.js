@@ -68,6 +68,10 @@ test('pending lookup skips rows that should not be scored', async () => {
   // Succeeded but produced no output.
   await insert({ id: 'no-output', status: 'success', output_message: null, created_at: iso(60 * 1000) });
 
+  // Tool and chain spans are not LLM chat requests.
+  await insert({ id: 'tool-span', status: 'success', output_message: { status: 'done' }, span_type: 'tool', created_at: iso(60 * 1000) });
+  await insert({ id: 'chain-span', status: 'success', output_message: { status: 'done' }, span_type: 'chain', created_at: iso(60 * 1000) });
+
   // Older than the lookback window.
   await insert({ id: 'ancient', status: 'success', output_message: { role: 'assistant', content: 'a' }, created_at: iso(48 * 60 * 60 * 1000) });
 
@@ -76,6 +80,8 @@ test('pending lookup skips rows that should not be scored', async () => {
   assert.ok(!ids.includes('scored'), 'already evaluated');
   assert.ok(!ids.includes('failed'), 'failed request');
   assert.ok(!ids.includes('no-output'), 'no output message');
+  assert.ok(!ids.includes('tool-span'), 'tool span');
+  assert.ok(!ids.includes('chain-span'), 'chain span');
   assert.ok(!ids.includes('ancient'), 'outside the lookback window');
 });
 
@@ -98,4 +104,21 @@ test('recoverPendingEvaluations re-queues the backlog', async () => {
 test('recovery can be turned off with a zero limit', async () => {
   const count = await recoverPendingEvaluations({ limit: 0 });
   assert.equal(count, 0);
+});
+
+test('evaluator handles non-array input_messages, null metadata, and tool spans without throwing', async () => {
+  await insert({
+    id: 'object-input',
+    status: 'success',
+    input_messages: { action: 'select', table: 'orders' },
+    output_message: { status: 'shipped' },
+    metadata: null,
+    feedback: null,
+    span_type: 'tool',
+    created_at: iso(60 * 1000),
+  });
+
+  const { queueEvaluation } = require('../services/evaluator');
+  queueEvaluation('object-input');
+  assert.equal(await drainEvaluations(2000), true);
 });

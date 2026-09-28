@@ -14,7 +14,7 @@ const { buildProductionSection, reduceEvaluationRows } = require('./eval-metrics
 /** @type {import('better-sqlite3').Database | null} */
 let db = null;
 
-const DEFAULT_DB_PATH = path.resolve(__dirname, '..', 'data', 'infrasight.db');
+const DEFAULT_DB_PATH = path.resolve(__dirname, '..', '..', 'data', 'infrasight.db');
 
 /**
  * Returns the database instance, initializing it if necessary.
@@ -23,7 +23,8 @@ const DEFAULT_DB_PATH = path.resolve(__dirname, '..', 'data', 'infrasight.db');
 function getDb() {
   if (db) return db;
 
-  const dbPath = process.env.DB_PATH || DEFAULT_DB_PATH;
+  const rawPath = process.env.DB_PATH || DEFAULT_DB_PATH;
+  const dbPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(__dirname, '..', '..', rawPath);
   const dbDir = path.dirname(dbPath);
 
   // Auto-create the data directory if it doesn't exist
@@ -128,7 +129,8 @@ function insertRequest(data) {
       latency_ms, status, error_message,
       temperature, max_tokens, top_p, frequency_penalty, presence_penalty,
       user_id, metadata, tags, stream,
-      raw_request, raw_response, trace_id, span_id, parent_span_id, span_name, span_type, created_at
+      raw_request, raw_response, trace_id, span_id, parent_span_id, span_name, span_type,
+      evaluation, feedback, created_at
     ) VALUES (
       @id, @conversation_id, @model, @provider,
       @input_messages, @output_message,
@@ -136,7 +138,8 @@ function insertRequest(data) {
       @latency_ms, @status, @error_message,
       @temperature, @max_tokens, @top_p, @frequency_penalty, @presence_penalty,
       @user_id, @metadata, @tags, @stream,
-      @raw_request, @raw_response, @trace_id, @span_id, @parent_span_id, @span_name, @span_type, @created_at
+      @raw_request, @raw_response, @trace_id, @span_id, @parent_span_id, @span_name, @span_type,
+      @evaluation, @feedback, @created_at
     )
   `);
 
@@ -170,6 +173,8 @@ function insertRequest(data) {
     parent_span_id: data.parent_span_id || null,
     span_name: data.span_name || null,
     span_type: data.span_type || null,
+    evaluation: data.evaluation ? (typeof data.evaluation === 'string' ? data.evaluation : JSON.stringify(data.evaluation)) : null,
+    feedback: data.feedback ? (typeof data.feedback === 'string' ? data.feedback : JSON.stringify(data.feedback)) : null,
     created_at: data.created_at || new Date().toISOString(),
   };
 
@@ -320,6 +325,10 @@ function getRequests(filters = {}) {
   if (filters.maxEval != null) {
     conditions.push("CAST(json_extract(r.evaluation, '$.score') AS REAL) <= @maxEval");
     params.maxEval = parseFloat(filters.maxEval);
+  }
+  if (filters.taskType) {
+    conditions.push("COALESCE(json_extract(r.evaluation, '$.task_type'), json_extract(r.evaluation, '$.category'), 'general') = @taskType");
+    params.taskType = filters.taskType;
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -1088,6 +1097,7 @@ function getPendingEvaluationIds(opts = {}) {
     WHERE evaluation IS NULL
       AND status = 'success'
       AND output_message IS NOT NULL
+      AND (span_type IS NULL OR span_type = 'llm')
       AND created_at >= @since
     ORDER BY created_at DESC
     LIMIT @limit

@@ -131,11 +131,13 @@ async function insertRequest(data) {
       latency_ms, status, error_message,
       temperature, max_tokens, top_p, frequency_penalty, presence_penalty,
       user_id, metadata, tags, stream,
-      raw_request, raw_response, trace_id, span_id, parent_span_id, span_name, span_type, created_at
+      raw_request, raw_response, trace_id, span_id, parent_span_id, span_name, span_type,
+      evaluation, feedback, created_at
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15, $16, $17, $18,
-      $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+      $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
+      $30, $31, $32
     )
   `;
 
@@ -145,6 +147,8 @@ async function insertRequest(data) {
   const tags = data.tags ? (typeof data.tags === 'string' ? data.tags : JSON.stringify(data.tags)) : null;
   const raw_request = data.raw_request ? (typeof data.raw_request === 'string' ? data.raw_request : JSON.stringify(data.raw_request)) : null;
   const raw_response = data.raw_response ? (typeof data.raw_response === 'string' ? data.raw_response : JSON.stringify(data.raw_response)) : null;
+  const evaluation = data.evaluation ? (typeof data.evaluation === 'string' ? data.evaluation : JSON.stringify(data.evaluation)) : null;
+  const feedback = data.feedback ? (typeof data.feedback === 'string' ? data.feedback : JSON.stringify(data.feedback)) : null;
 
   const values = [
     data.id,
@@ -176,6 +180,8 @@ async function insertRequest(data) {
     data.parent_span_id || null,
     data.span_name || null,
     data.span_type || null,
+    evaluation,
+    feedback,
     data.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19)
   ];
 
@@ -296,6 +302,10 @@ async function getRequests(filters = {}) {
   if (filters.maxEval != null) {
     conditions.push(`CAST(r.evaluation::json->>'score' AS DOUBLE PRECISION) <= $${paramIdx++}`);
     params.push(parseFloat(filters.maxEval));
+  }
+  if (filters.taskType) {
+    conditions.push(`COALESCE(r.evaluation::json->>'task_type', r.evaluation::json->>'category', 'general') = $${paramIdx++}`);
+    params.push(filters.taskType);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -886,6 +896,7 @@ async function getPendingEvaluationIds(opts = {}) {
     WHERE evaluation IS NULL
       AND status = 'success'
       AND output_message IS NOT NULL
+      AND (span_type IS NULL OR span_type = 'llm')
       AND created_at >= $1
     ORDER BY created_at DESC
     LIMIT $2

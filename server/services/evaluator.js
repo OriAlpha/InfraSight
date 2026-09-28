@@ -141,6 +141,11 @@ async function recoverPendingEvaluations(opts = {}) {
  */
 async function performEvaluation(requestId) {
   try {
+    const mockSetting = ((await getConfig('MOCK_MODE')) || process.env.MOCK_MODE || '').toLowerCase();
+    if (mockSetting === 'true') {
+      return; // Skip external LLM evaluation in mock mode (evaluations are synthesized inline)
+    }
+
     const upstreamKey = await getConfig('UPSTREAM_API_KEY');
     const apiKey = upstreamKey || process.env.DEEPINFRA_API_KEY;
     if (!apiKey) {
@@ -153,24 +158,56 @@ async function performEvaluation(requestId) {
       return;
     }
 
-    // Skip if the request failed or has no output
+    // Skip if the request failed, has no output, or is a non-LLM span (e.g. tool execution, chain)
     if (request.status === 'error' || !request.output_message) {
       return;
     }
+    if (request.span_type && request.span_type !== 'llm') {
+      return;
+    }
 
-    const inputMessages = JSON.parse(request.input_messages || '[]');
-    const outputMessage = JSON.parse(request.output_message || '{}');
+    let inputMessages = [];
+    try {
+      inputMessages = typeof request.input_messages === 'string'
+        ? JSON.parse(request.input_messages || '[]')
+        : (request.input_messages || []);
+    } catch {
+      inputMessages = [];
+    }
 
-    const systemMessage = inputMessages.find(m => m.role === 'system')?.content || '';
-    const userMessage = inputMessages.find(m => m.role === 'user')?.content || '(no user message)';
-    const assistantResponse = outputMessage.content || '';
+    let outputMessage = {};
+    try {
+      outputMessage = typeof request.output_message === 'string'
+        ? JSON.parse(request.output_message || '{}')
+        : (request.output_message || {});
+    } catch {
+      outputMessage = {};
+    }
+
+    const messagesList = Array.isArray(inputMessages) ? inputMessages : [];
+    const systemMessage = messagesList.find(m => m && m.role === 'system')?.content || '';
+    const userMessage = messagesList.find(m => m && m.role === 'user')?.content
+      || (typeof inputMessages === 'string' ? inputMessages : (inputMessages && typeof inputMessages === 'object' ? JSON.stringify(inputMessages) : ''))
+      || '(no user message)';
+
+    const assistantResponse = (outputMessage && typeof outputMessage === 'object' ? outputMessage.content : '')
+      || (typeof outputMessage === 'string' ? outputMessage : '')
+      || '';
 
     if (!assistantResponse) {
       return;
     }
 
     // Extract context from metadata or search sibling tool spans under the trace
-    const metadataObj = JSON.parse(request.metadata || '{}');
+    let metadataObj = {};
+    try {
+      metadataObj = (typeof request.metadata === 'string' ? JSON.parse(request.metadata || '{}') : request.metadata) || {};
+    } catch {
+      metadataObj = {};
+    }
+    if (typeof metadataObj !== 'object' || metadataObj === null) {
+      metadataObj = {};
+    }
     let context = metadataObj.context || metadataObj.retrieved_chunks || metadataObj.chunks || '';
 
     if (!context && request.trace_id) {
@@ -180,7 +217,7 @@ async function performEvaluation(requestId) {
         if (span.output_message) {
           try {
             const out = JSON.parse(span.output_message);
-            if (out.content) outputs.push(out.content);
+            if (out && out.content) outputs.push(out.content);
           } catch (e) {}
         } else if (span.raw_response) {
           outputs.push(span.raw_response);
@@ -192,7 +229,15 @@ async function performEvaluation(requestId) {
     }
 
     // Pre-compute local NLP metrics if expected answer/ground truth exists in metadata or human feedback
-    const feedbackObj = JSON.parse(request.feedback || '{}');
+    let feedbackObj = {};
+    try {
+      feedbackObj = (typeof request.feedback === 'string' ? JSON.parse(request.feedback || '{}') : request.feedback) || {};
+    } catch {
+      feedbackObj = {};
+    }
+    if (typeof feedbackObj !== 'object' || feedbackObj === null) {
+      feedbackObj = {};
+    }
     const expectedAnswer = metadataObj.expected_answer || metadataObj.ground_truth || feedbackObj.expected_answer || '';
     let nlpMetrics = {};
     if (expectedAnswer) {

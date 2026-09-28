@@ -49,6 +49,7 @@ router.get('/', async (req, res) => {
       feedback: req.query.feedback,
       minEval: req.query.minEval,
       maxEval: req.query.maxEval,
+      taskType: req.query.taskType,
     });
 
     if (result && result.data) {
@@ -88,6 +89,7 @@ router.get('/export/csv', async (req, res) => {
       feedback: req.query.feedback,
       minEval: req.query.minEval,
       maxEval: req.query.maxEval,
+      taskType: req.query.taskType,
     });
 
     const CSV_COLUMNS = [
@@ -163,6 +165,7 @@ router.get('/export/finetuning', async (req, res) => {
       feedback: req.query.feedback,
       minEval: req.query.minEval,
       maxEval: req.query.maxEval,
+      taskType: req.query.taskType,
     });
 
     const lines = [];

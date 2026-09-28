@@ -8,51 +8,69 @@ InfraSight is a lightweight, provider-agnostic observability platform and transp
 ## High-Level Workflow
 
 ```mermaid
-graph TD
-    classDef default fill:#1e1e2f,stroke:#333,stroke-width:1px,color:#fff;
-    classDef client fill:#2d1b4e,stroke:#6c5ce7,stroke-width:2px,color:#fff;
-    classDef proxy fill:#1a365d,stroke:#3182ce,stroke-width:2px,color:#fff;
-    classDef llm fill:#22543d,stroke:#38a169,stroke-width:2px,color:#fff;
-    classDef dashboard fill:#742a2a,stroke:#e53e3e,stroke-width:2px,color:#fff;
+flowchart LR
+    %% Styling Palette
+    classDef client fill:#1e1b4b,stroke:#6366f1,stroke-width:2px,color:#fff;
+    classDef proxy fill:#0f172a,stroke:#06b6d4,stroke-width:2.5px,color:#fff;
+    classDef llm fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#fff;
+    classDef feature fill:#1e293b,stroke:#334155,stroke-width:1.5px,color:#cbd5e1;
+    classDef ui fill:#3b0764,stroke:#a855f7,stroke-width:2px,color:#fff;
 
-    subgraph Client [Client Application]
-        App[Application / SDK Client]:::client
+    subgraph Clients ["  1. CLIENTS & AGENTS  "]
+        direction TB
+        C1["OpenAI SDK (Python / TS)"]:::client
+        C2["LangChain & LlamaIndex"]:::client
+        C3["Direct REST / cURL"]:::client
     end
 
-    subgraph InfraSight [InfraSight Proxy Server]
-        Router[Proxy Router / Express]:::proxy
-        Guard[Active Guardrails<br/>PII Masking & Keyword Block]:::proxy
-        HITL[HITL Interceptor<br/>Approval Checkpoint]:::proxy
-        DB[Database Gateway<br/>SQLite / Postgres]:::proxy
-        Queue[Background Evaluator Queue<br/>NLP & LLM-as-a-Judge]:::proxy
-        Alerts[Alerting Engine<br/>Slack & Discord Webhooks]:::proxy
+    subgraph Gateway ["  2. INFRASIGHT PROXY  "]
+        direction TB
+        G1["⚡ Transparent Proxy Router"]:::proxy
+        G2["🛡️ PII Masking & Guardrails"]:::proxy
+        G3["⏱️ Latency & TTFT Tracker"]:::proxy
+        G1 --> G2 --> G3
     end
 
-    subgraph Operator [Operator Control Panel]
-        WebUI[React Web Dashboard]:::dashboard
+    subgraph Upstream ["  3. UPSTREAM PROVIDERS  "]
+        direction TB
+        U1["DeepInfra / Together AI"]:::llm
+        U2["OpenAI / Groq / Anthropic"]:::llm
+        U3["Local Ollama & vLLM"]:::llm
     end
 
-    subgraph Provider [Upstream LLM Provider]
-        LLM[Upstream API<br/>DeepInfra / OpenAI / Ollama]:::llm
+    subgraph Observability ["  4. ZERO-OVERHEAD OBSERVABILITY PLATFORM  "]
+        direction TB
+        O1["📊 Latency Flow (TTFT, Decode Speed & Breakdown)"]:::feature
+        O2["🧠 LLM-as-a-Judge (Automated Quality & RAG Scoring)"]:::feature
+        O3["🔀 Distributed Traces (Nested Agent Spans & Tool Calls)"]:::feature
+        O4["🖥️ Real-Time Web Dashboard & Alerting (Slack/Discord)"]:::ui
+        O1 & O2 & O3 --> O4
     end
 
-    App -->|1. LLM Chat Request| Router
-    Router -->|2. Filter Input| Guard
-    Guard -->|If Violates Policy| App
-    Guard -->|Passed| HITL
-    
-    HITL -->|3. Pause & Review if over limit| WebUI
-    WebUI -->|Approve / Reject| HITL
-    
-    HITL -->|4. Forward Request| LLM
-    LLM -->|5. Return Response| Router
-    
-    Router -->|6. Log Telemetry Data| DB
-    Router -->|7. Queue Evaluator Job| Queue
-    Router -->|8. Return Response| App
-    
-    Queue -->|Asynchronous Evaluation| Queue
-    Queue -->|Threshold Violation| Alerts
+    Clients ==>|"1. Standard API Request"| Gateway
+    Gateway ==>|"2. Filtered & Routed"| Upstream
+    Upstream -->|"3. Streaming Tokens"| Gateway
+    Gateway -->|"4. Instant Return (Zero Added Latency)"| Clients
+
+    Gateway -...->|"Async Telemetry & Spans"| Observability
+```
+
+### 🔌 1-Line Drop-In Integration
+InfraSight works with your existing code. Simply repoint `base_url`:
+
+```python
+from openai import OpenAI
+
+# Just point base_url to InfraSight — everything else stays identical!
+client = OpenAI(
+    base_url="http://localhost:3000/api/proxy/v1",
+    api_key="your-deepinfra-or-openai-key"
+)
+
+response = client.chat.completions.create(
+    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    messages=[{"role": "user", "content": "Hello world!"}]
+)
 ```
 
 ---
