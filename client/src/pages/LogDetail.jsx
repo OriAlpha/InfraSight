@@ -27,6 +27,7 @@ import Badge from '../components/ui/Badge';
 import ChatBubble from '../components/ui/ChatBubble';
 import JsonViewer from '../components/ui/JsonViewer';
 import Tooltip from '../components/ui/Tooltip';
+import LatencyFlow from '../components/LatencyFlow';
 
 function formatModelName(name) {
   if (!name) return 'Unknown';
@@ -528,6 +529,9 @@ export default function LogDetail() {
           </div>
         </div>
       )}
+
+      {/* Latency Flow & Execution Breakdown */}
+      <LatencyFlow log={log} traceTree={traceTree} />
 
       {/* Evaluations & Feedback panels */}
       <div className="eval-dashboard-grid">

@@ -161,3 +161,26 @@ test('an empty window returns zeroed sections rather than NaN', async () => {
   assert.equal(result.userFeedback.avgRating, 0);
   assert.equal(result.rag.faithfulness, 0);
 });
+
+test('getRequests filters accurately by taskType', async () => {
+  await insert({
+    id: 'req-task-code',
+    evaluation: { score: 4.5, task_type: 'code_generation' },
+    created_at: `${DAY_1}T12:00:00.000Z`,
+    status: 'success',
+  });
+  await insert({
+    id: 'req-task-trans',
+    evaluation: { score: 4.8, task_type: 'translation' },
+    created_at: `${DAY_1}T12:01:00.000Z`,
+    status: 'success',
+  });
+
+  const codeRes = await db.getRequests({ taskType: 'code_generation' });
+  assert.ok(codeRes.data.some(r => r.id === 'req-task-code'));
+  assert.ok(!codeRes.data.some(r => r.id === 'req-task-trans'));
+
+  const transRes = await db.getRequests({ taskType: 'translation' });
+  assert.ok(transRes.data.some(r => r.id === 'req-task-trans'));
+  assert.ok(!transRes.data.some(r => r.id === 'req-task-code'));
+});

@@ -74,6 +74,7 @@ export default function Logs() {
   const [modelFilter, setModelFilter] = useState(() => parseQueryParam(searchParams.get('model')));
   const [statusFilter, setStatusFilter] = useState(() => parseQueryParam(searchParams.get('status')));
   const [feedbackFilter, setFeedbackFilter] = useState(() => parseQueryParam(searchParams.get('feedback')));
+  const [taskTypeFilter, setTaskTypeFilter] = useState(() => parseQueryParam(searchParams.get('taskType')));
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState('desc');
   const [dateRange, setDateRange] = useState(() => ({
@@ -102,6 +103,7 @@ export default function Logs() {
         model: modelFilter,
         status: statusFilter,
         feedback: feedbackFilter,
+        taskType: taskTypeFilter,
         startDate: dateRange.startDate,
         endDate: dateRange.endDate,
         search: search,
@@ -118,6 +120,7 @@ export default function Logs() {
     setModelFilter(filter.filters.model || '');
     setStatusFilter(filter.filters.status || '');
     setFeedbackFilter(filter.filters.feedback || '');
+    setTaskTypeFilter(filter.filters.taskType || '');
     setDateRange({
       startDate: filter.filters.startDate || '',
       endDate: filter.filters.endDate || '',
@@ -138,6 +141,7 @@ export default function Logs() {
     const nextStatus = parseQueryParam(searchParams.get('status'));
     const nextModel = parseQueryParam(searchParams.get('model'));
     const nextFeedback = parseQueryParam(searchParams.get('feedback'));
+    const nextTaskType = parseQueryParam(searchParams.get('taskType'));
     const nextStart = parseQueryParam(searchParams.get('startDate'));
     const nextEnd = parseQueryParam(searchParams.get('endDate'));
     const nextSearch = parseQueryParam(searchParams.get('search'));
@@ -145,6 +149,7 @@ export default function Logs() {
     if (nextStatus !== statusFilter) setStatusFilter(nextStatus);
     if (nextModel !== modelFilter) setModelFilter(nextModel);
     if (nextFeedback !== feedbackFilter) setFeedbackFilter(nextFeedback);
+    if (nextTaskType !== taskTypeFilter) setTaskTypeFilter(nextTaskType);
     if (nextStart !== dateRange.startDate || nextEnd !== dateRange.endDate) {
       setDateRange({ startDate: nextStart, endDate: nextEnd });
     }
@@ -165,6 +170,9 @@ export default function Logs() {
     
     if (feedbackFilter) next.set('feedback', feedbackFilter);
     else next.delete('feedback');
+
+    if (taskTypeFilter) next.set('taskType', taskTypeFilter);
+    else next.delete('taskType');
     
     if (dateRange.startDate) next.set('startDate', dateRange.startDate);
     else next.delete('startDate');
@@ -178,7 +186,7 @@ export default function Logs() {
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true });
     }
-  }, [modelFilter, statusFilter, feedbackFilter, dateRange, search, searchParams, setSearchParams]);
+  }, [modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, search, searchParams, setSearchParams]);
 
   const limit = 20;
 
@@ -190,12 +198,13 @@ export default function Logs() {
       model: modelFilter || undefined,
       status: statusFilter || undefined,
       feedback: feedbackFilter || undefined,
+      taskType: taskTypeFilter || undefined,
       startDate: dateRange.startDate || undefined,
       endDate: dateRange.endDate || undefined,
       sortBy,
       sortOrder,
     }),
-    [page, search, modelFilter, statusFilter, feedbackFilter, dateRange, sortBy, sortOrder]
+    [page, search, modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, sortBy, sortOrder]
   );
 
   const { data, loading, error, refetch } = useApi('/logs', { params, enabled: viewMode === 'list' });
@@ -233,6 +242,20 @@ export default function Logs() {
     { value: 'negative', label: '👎 Negative' },
   ], []);
 
+  const taskTypeOptions = useMemo(() => [
+    { value: '', label: 'All Task Types' },
+    { value: 'code_generation', label: 'Code Generation' },
+    { value: 'question_answering', label: 'Question Answering' },
+    { value: 'summarization', label: 'Summarization' },
+    { value: 'paraphrase', label: 'Paraphrase' },
+    { value: 'translation', label: 'Translation' },
+    { value: 'creative_writing', label: 'Creative Writing' },
+    { value: 'extraction', label: 'Extraction' },
+    { value: 'classification', label: 'Classification' },
+    { value: 'conversation', label: 'Conversation' },
+    { value: 'general', label: 'General' },
+  ], []);
+
   const handleSearch = useCallback(
     (e) => {
       e.preventDefault();
@@ -254,6 +277,7 @@ export default function Logs() {
     setModelFilter('');
     setStatusFilter('');
     setFeedbackFilter('');
+    setTaskTypeFilter('');
     setDateRange({ startDate: '', endDate: '' });
     setPage(1);
   };
@@ -263,24 +287,26 @@ export default function Logs() {
       model: modelFilter || '',
       status: statusFilter || '',
       feedback: feedbackFilter || '',
+      taskType: taskTypeFilter || '',
       startDate: dateRange.startDate || '',
       endDate: dateRange.endDate || '',
       search: search || '',
     }).toString();
     window.open(`/api/logs/export/csv?${query}`, '_blank');
-  }, [modelFilter, statusFilter, feedbackFilter, dateRange, search]);
+  }, [modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, search]);
 
   const handleExportFinetuning = useCallback(() => {
     const query = new URLSearchParams({
       model: modelFilter || '',
       status: statusFilter || 'success',
       feedback: feedbackFilter || '',
+      taskType: taskTypeFilter || '',
       startDate: dateRange.startDate || '',
       endDate: dateRange.endDate || '',
       search: search || '',
     }).toString();
     window.open(`/api/logs/export/finetuning?${query}`, '_blank');
-  }, [modelFilter, statusFilter, feedbackFilter, dateRange, search]);
+  }, [modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, search]);
 
   const handleViewTrace = useCallback((traceId) => {
     const next = new URLSearchParams(searchParams);
@@ -289,7 +315,7 @@ export default function Logs() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const hasFilters = search || modelFilter || statusFilter || feedbackFilter || dateRange.startDate;
+  const hasFilters = Boolean(search || modelFilter || statusFilter || feedbackFilter || taskTypeFilter || dateRange.startDate);
 
   const columns = [
     {
@@ -630,6 +656,19 @@ export default function Logs() {
               />
             </div>
           </form>
+
+          {viewMode === 'list' && (
+            <CustomSelect
+              value={taskTypeFilter}
+              onChange={(val) => {
+                setTaskTypeFilter(val);
+                setPage(1);
+              }}
+              options={taskTypeOptions}
+              placeholder="All Task Types"
+              style={{ width: 170 }}
+            />
+          )}
 
           <CustomSelect
             value={modelFilter}
