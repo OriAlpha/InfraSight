@@ -67,7 +67,8 @@ async function getProxyConfig() {
   const activePiiRedaction = activePiiRedactionSetting === 'true';
 
   const bannedKeywordsSetting = await getConfig('BANNED_KEYWORDS');
-  const bannedKeywordsStr = bannedKeywordsSetting || 'exploit,jailbreak,bypass,malware';
+  const defaultBanned = 'exploit,jailbreak,bypass,malware,ignore all previous instructions,developer debug mode,insulting employee intelligence';
+  const bannedKeywordsStr = (bannedKeywordsSetting && bannedKeywordsSetting.trim()) ? `${bannedKeywordsSetting},${defaultBanned}` : defaultBanned;
 
   const upstreamKey = await getConfig('UPSTREAM_API_KEY');
   const apiKey = upstreamKey || process.env.DEEPINFRA_API_KEY;
@@ -655,7 +656,7 @@ async function handleNonStreamingRequest(req, res, targetUrl, requestBody, cfg) 
         user_id: requestBody.user || req.headers['x-user-id'] || null,
         stream: false,
         raw_request: getLogPayload(requestBody, 'raw', cfg),
-        raw_response: null,
+        raw_response: getLogPayload({ error: { message: err.message, type: 'proxy_error' } }, 'raw', cfg),
         trace_id: traceId,
         span_id: spanId,
         parent_span_id: parentSpanId,
@@ -862,7 +863,19 @@ async function handleStreamingRequest(req, res, targetUrl, requestBody, cfg) {
         tags: null,
         stream: true,
         raw_request: getLogPayload(requestBody, 'raw', cfg),
-        raw_response: getLogPayload({ finish_reason: finishReason, usage, content_length: content.length }, 'raw', cfg),
+        raw_response: getLogPayload({
+          id: requestId,
+          object: 'chat.completion',
+          model,
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content },
+              finish_reason: finishReason || 'stop',
+            }
+          ],
+          usage
+        }, 'raw', cfg),
         trace_id: traceId,
         span_id: spanId,
         parent_span_id: parentSpanId,
@@ -916,7 +929,7 @@ async function handleStreamingRequest(req, res, targetUrl, requestBody, cfg) {
         user_id: requestBody.user || req.headers['x-user-id'] || null,
         stream: true,
         raw_request: getLogPayload(requestBody, 'raw', cfg),
-        raw_response: null,
+        raw_response: getLogPayload({ error: { message: err.message, type: 'proxy_stream_error' } }, 'raw', cfg),
         trace_id: traceId,
         span_id: spanId,
         parent_span_id: parentSpanId,
@@ -951,7 +964,7 @@ async function handleStreamingRequest(req, res, targetUrl, requestBody, cfg) {
  * Returns true if the request was blocked, sending a response automatically.
  * Otherwise, modifies the requestBody in place (e.g., redacting PII) and returns false.
  */
-function runInputGuardrails(req, res, requestBody, cfg) {
+async function runInputGuardrails(req, res, requestBody, cfg, startTime = Date.now()) {
   if (!requestBody || !Array.isArray(requestBody.messages)) {
     return false;
   }
@@ -967,13 +980,81 @@ function runInputGuardrails(req, res, requestBody, cfg) {
   });
 
   if (result.blocked) {
+    const requestId = uuidv4();
+    const latencyMs = Math.max(15, Date.now() - startTime);
+    const tokenEst = estimateTokens(requestBody.messages, '');
+    const promptTokens = Number(tokenEst?.promptTokens) || 1;
+    const blockedOutput = `Blocked by guardrail: prompt contains forbidden keyword '${result.keyword}'`;
+    const errorMessage = `Request blocked by InfraSight Guardrails: Banned content detected (keyword: "${result.keyword}").`;
+
     res.status(400).json({
       error: {
-        message: `Request blocked by InfraSight Guardrails: Banned content detected (keyword: "${result.keyword}").`,
+        message: errorMessage,
         type: 'guardrails_validation_error',
         code: 'content_blocked'
       }
     });
+
+    try {
+      await insertRequest({
+        id: requestId,
+        conversation_id: requestBody.conversation_id || req.headers['x-conversation-id'] || null,
+        model: requestBody.model || 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+        provider: cfg.providerName,
+        input_messages: getLogPayload(requestBody.messages || [], 'input', cfg),
+        output_message: getLogPayload({ role: 'assistant', content: blockedOutput }, 'output', cfg),
+        prompt_tokens: promptTokens,
+        completion_tokens: 0,
+        total_tokens: promptTokens,
+        estimated_cost: 0,
+        latency_ms: latencyMs,
+        status: 'success',
+        error_message: null,
+        temperature: requestBody.temperature,
+        max_tokens: requestBody.max_tokens,
+        top_p: requestBody.top_p,
+        user_id: requestBody.user || req.headers['x-user-id'] || null,
+        metadata: {
+          guardrail_intercepted: true,
+          blocked_keyword: result.keyword,
+          category: 'guardrail_violation'
+        },
+        tags: JSON.stringify(['security', 'guardrail-blocked', 'unsafe']),
+        stream: false,
+        raw_request: {
+          model: requestBody.model,
+          messages: requestBody.messages
+        },
+        raw_response: {
+          error: {
+            message: errorMessage,
+            type: 'guardrails_validation_error',
+            code: 'content_blocked'
+          }
+        },
+        evaluation: {
+          score: 1.0,
+          reasoning: blockedOutput,
+          category: 'inaccuracy',
+          task_type: 'general',
+          task_metrics: ['instruction_following', 'helpfulness', 'coherence', 'fluency', 'completeness'],
+          safety: {
+            status: 'unsafe',
+            reasoning: blockedOutput
+          }
+        },
+        feedback: {
+          score: -1,
+          rating: 1,
+          comment: `Security Guardrail Intercept: Blocked forbidden keyword '${result.keyword}' before upstream model invocation.`,
+          task_success: false,
+          expected_answer: blockedOutput
+        }
+      });
+    } catch (dbErr) {
+      console.error('[proxy] Error saving guardrail blocked request to database:', dbErr.message);
+    }
+
     return true;
   }
 
@@ -986,6 +1067,7 @@ function runInputGuardrails(req, res, requestBody, cfg) {
 // ---------------------------------------------------------------------------
 
 router.all('/*', async (req, res) => {
+  const startTime = Date.now();
   const cfg = await getProxyConfig();
 
   if (cfg.configError) {
@@ -1046,7 +1128,7 @@ router.all('/*', async (req, res) => {
 
   const requestBody = req.body;
 
-  if (runInputGuardrails(req, res, requestBody, cfg)) {
+  if (await runInputGuardrails(req, res, requestBody, cfg, startTime)) {
     return;
   }
 

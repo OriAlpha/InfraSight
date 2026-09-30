@@ -23,6 +23,8 @@ router.get('/', async (req, res) => {
       limit,
       startDate: req.query.startDate,
       endDate: req.query.endDate,
+      model: req.query.model,
+      status: req.query.status,
     });
     
     res.json(result);

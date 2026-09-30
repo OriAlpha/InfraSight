@@ -63,6 +63,15 @@ const MODELS = [
     output_cost_per_million: 0.27,
     context_window: 8192,
   },
+  {
+    id: 'Qwen/Qwen2.5-72B-Instruct',
+    name: 'Qwen2.5-72B-Instruct',
+    display_name: 'Qwen 2.5 72B Instruct',
+    provider: 'deepinfra',
+    input_cost_per_million: 0.35,
+    output_cost_per_million: 0.40,
+    context_window: 131072,
+  },
 ];
 
 /**

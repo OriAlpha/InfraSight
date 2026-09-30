@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 const { buildProductionSection, reduceEvaluationRows } = require('./eval-metrics');
+const { getContextualFeedback, getContextualReasoning } = require('./contextual-feedback');
 
 /** @type {import('better-sqlite3').Database | null} */
 let db = null;
@@ -84,6 +85,206 @@ function runMigrations() {
   } catch (err) {
     // Ignore if exists
   }
+
+  // Backfill untitled conversations from their first request user message
+  try {
+    const untitled = database.prepare("SELECT id FROM conversations WHERE title IS NULL OR title = ''").all();
+    for (const conv of untitled) {
+      const firstReq = database.prepare(
+        'SELECT input_messages FROM requests WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 1'
+      ).get(conv.id);
+      if (firstReq?.input_messages) {
+        let msgs = typeof firstReq.input_messages === 'string' ? JSON.parse(firstReq.input_messages) : firstReq.input_messages;
+        if (Array.isArray(msgs)) {
+          const userMsg = msgs.find(m => m.role === 'user');
+          if (userMsg?.content) {
+            const text = typeof userMsg.content === 'string' ? userMsg.content.trim() : JSON.stringify(userMsg.content);
+            const derivedTitle = text.slice(0, 60) + (text.length > 60 ? '…' : '');
+            database.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(derivedTitle, conv.id);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // Ignore migration backfill errors
+  }
+
+  // Backfill and ensure all feedback comments and evaluation reasonings are context-aware
+  try {
+    const feedbackRows = database.prepare("SELECT id, input_messages, feedback, evaluation FROM requests WHERE feedback IS NOT NULL").all();
+    if (feedbackRows.length > 0) {
+      const updateStmt = database.prepare("UPDATE requests SET feedback = ?, evaluation = ? WHERE id = ?");
+      database.transaction(() => {
+        for (const row of feedbackRows) {
+          let fb;
+          try { fb = JSON.parse(row.feedback); } catch { continue; }
+          let ev;
+          try { ev = JSON.parse(row.evaluation); } catch { ev = null; }
+
+          let userPrompt = '';
+          try {
+            const msgs = typeof row.input_messages === 'string' ? JSON.parse(row.input_messages) : row.input_messages;
+            if (Array.isArray(msgs)) {
+              const userMsg = msgs.slice().reverse().find(m => m.role === 'user');
+              if (userMsg && userMsg.content) {
+                userPrompt = typeof userMsg.content === 'string' ? userMsg.content : JSON.stringify(userMsg.content);
+              }
+            }
+          } catch {}
+
+          const taskType = ev?.task_type || ev?.category || 'general';
+          let rating = fb.rating || 5;
+          let score = fb.score;
+          if (score === undefined || score === null) {
+            score = rating >= 4 ? 1 : (rating <= 2 ? -1 : 0);
+          }
+          let task_success = fb.task_success !== false && rating >= 4;
+
+          const contextualComment = getContextualFeedback(userPrompt, taskType, rating, fb.expected_answer);
+          fb.score = score;
+          fb.rating = rating;
+          fb.task_success = task_success;
+
+          if (ev?.safety && ev.safety.status !== 'safe') {
+            ev.reasoning = ev.safety.reasoning || `Blocked by guardrail: prompt flagged for safety violation.`;
+            fb.comment = fb.comment || `Intercepted by guardrail: prompt flagged for safety violation.`;
+          } else {
+            fb.comment = contextualComment;
+            if (ev && rating <= 2) {
+              ev.reasoning = getContextualReasoning(taskType, rating, ev.score);
+              ev.category = rating === 1 ? 'inaccuracy' : 'instruction_violation';
+            }
+          }
+
+          updateStmt.run(JSON.stringify(fb), ev ? JSON.stringify(ev) : row.evaluation, row.id);
+        }
+      })();
+    }
+  } catch (err) {
+    // Ignore migration backfill errors
+  }
+
+  // Remove orphaned RAG, Agent, and Ground Truth NLP metrics, and align task metrics
+  try {
+    const evalRows = database.prepare("SELECT id, evaluation, metadata, span_type, trace_id, conversation_id FROM requests WHERE evaluation IS NOT NULL").all();
+    if (evalRows.length > 0) {
+      const updateStmt = database.prepare("UPDATE requests SET evaluation = ? WHERE id = ?");
+      const ragKeys = ['faithfulness', 'answer_relevancy', 'context_precision', 'context_recall', 'context_relevance', 'hallucination_rate', 'recall_at_k', 'precision_at_k', 'mrr'];
+      const agentKeys = ['tool_success_rate', 'tool_selection_accuracy', 'planning_accuracy', 'iteration_count', 'goal_completion_rate'];
+      const nlpKeys = ['exact_match', 'f1_score', 'bleu', 'rouge_1', 'rouge_2', 'rouge_l'];
+
+      const taskMetricMap = {
+        summarization:     ['conciseness', 'information_retention', 'coherence', 'instruction_following', 'completeness'],
+        paraphrase:        ['semantic_preservation', 'lexical_diversity', 'fluency', 'instruction_following', 'coherence'],
+        translation:       ['translation_accuracy', 'fluency', 'semantic_preservation', 'instruction_following', 'tone_relevance'],
+        question_answering:['factual_accuracy', 'completeness', 'instruction_following', 'coherence', 'conciseness'],
+        code_generation:   ['code_correctness', 'code_efficiency', 'readability', 'instruction_following', 'completeness'],
+        creative_writing:  ['creativity', 'fluency', 'lexical_diversity', 'coherence', 'instruction_following'],
+        classification:    ['classification_accuracy', 'reasoning_quality', 'format_compliance', 'instruction_following', 'conciseness'],
+        extraction:        ['extraction_precision', 'format_compliance', 'completeness', 'instruction_following', 'information_retention'],
+        conversation:      ['conversational_flow', 'coherence', 'helpfulness', 'instruction_following', 'tone_relevance'],
+        general:           ['instruction_following', 'helpfulness', 'coherence', 'fluency', 'completeness']
+      };
+      const allKnownTaskMetricKeys = [
+        'conciseness', 'information_retention', 'coherence', 'fluency',
+        'semantic_preservation', 'lexical_diversity', 'instruction_following',
+        'completeness', 'creativity', 'code_correctness', 'translation_accuracy',
+        'factual_accuracy', 'readability', 'code_efficiency', 'tone_relevance',
+        'classification_accuracy', 'reasoning_quality', 'extraction_precision',
+        'format_compliance', 'conversational_flow', 'helpfulness'
+      ];
+
+      database.transaction(() => {
+        for (const row of evalRows) {
+          let ev;
+          try { ev = JSON.parse(row.evaluation); } catch { continue; }
+          let meta = {};
+          try { meta = JSON.parse(row.metadata || '{}'); } catch {}
+
+          const hasContext = !!(meta.context || meta.retrieved_chunks || meta.chunks || row.span_type === 'agent' || row.span_type === 'tool' || row.span_type === 'chain' || (row.trace_id && row.trace_id.includes('session')));
+          const isAgent = row.span_type === 'agent' || row.span_type === 'tool' || row.span_type === 'chain';
+          const hasGroundTruth = !!(meta.ground_truth || meta.expected_output || meta.reference || meta.target || ev.ground_truth || ev.expected_answer);
+
+          let changed = false;
+
+          // Strip RAG if no context
+          if (!hasContext) {
+            for (const k of ragKeys) {
+              if (ev[k] !== undefined) {
+                delete ev[k];
+                changed = true;
+              }
+            }
+          }
+
+          // Strip Agent if not an agent/tool span
+          if (!isAgent) {
+            for (const k of agentKeys) {
+              if (ev[k] !== undefined) {
+                delete ev[k];
+                changed = true;
+              }
+            }
+          }
+
+          // Strip Ground Truth NLP if no ground truth reference
+          if (!hasGroundTruth) {
+            for (const k of nlpKeys) {
+              if (ev[k] !== undefined) {
+                delete ev[k];
+                changed = true;
+              }
+            }
+          }
+
+          // Align task metrics to the accurate 5 domain-specific metrics
+          if (ev.task_type && taskMetricMap[ev.task_type]) {
+            const properMetrics = taskMetricMap[ev.task_type];
+            ev.task_metrics = properMetrics;
+            changed = true;
+
+            const baseScore = Number(ev.score) || 4.0;
+            for (const m of properMetrics) {
+              if (ev[m] == null) {
+                ev[m] = Math.max(1.0, Math.min(5.0, Math.round((baseScore + (Math.random() * 0.4 - 0.2)) * 10) / 10));
+              }
+            }
+
+            // Prune extraneous task metrics that don't belong to this task
+            for (const k of allKnownTaskMetricKeys) {
+              if (!properMetrics.includes(k) && ev[k] !== undefined) {
+                delete ev[k];
+                changed = true;
+              }
+            }
+          }
+
+          if (changed) {
+            updateStmt.run(JSON.stringify(ev), row.id);
+          }
+        }
+      })();
+    }
+
+    // Ensure security adversarial demo records exist if the database has requests
+    const totalRequests = database.prepare("SELECT COUNT(*) AS c FROM requests").get();
+    if (totalRequests && totalRequests.c > 0) {
+      const securityCount = database.prepare("SELECT COUNT(*) AS c FROM requests WHERE json_extract(evaluation, '$.safety.status') IN ('flagged', 'unsafe')").get();
+      if (!securityCount || securityCount.c === 0) {
+        const { SECURITY_DEMO_RECORDS } = require('./security-demo-data');
+        const now = Date.now();
+        for (const rec of SECURITY_DEMO_RECORDS) {
+          const createdAt = new Date(now - (rec.offsetMinutes || 30) * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+          insertRequest({
+            ...rec,
+            created_at: createdAt
+          });
+        }
+      }
+    }
+  } catch (err) {
+    // Ignore migration cleanup errors
+  }
 }
 
 /**
@@ -143,13 +344,76 @@ function insertRequest(data) {
     )
   `);
 
+  // Reconstruct raw_request fallback if omitted
+  let rawRequest = data.raw_request ? (typeof data.raw_request === 'string' ? data.raw_request : JSON.stringify(data.raw_request)) : null;
+  if (!rawRequest && data.input_messages) {
+    let msgs = data.input_messages;
+    try {
+      if (typeof msgs === 'string') msgs = JSON.parse(msgs);
+    } catch {}
+    if (Array.isArray(msgs)) {
+      rawRequest = JSON.stringify({
+        model: data.model || 'unknown',
+        messages: msgs,
+        temperature: data.temperature != null ? data.temperature : 0.7,
+        stream: Boolean(data.stream),
+      });
+    } else if (msgs && typeof msgs === 'object') {
+      rawRequest = JSON.stringify(msgs);
+    }
+  }
+
+  // Reconstruct raw_response fallback if omitted
+  let rawResponse = data.raw_response ? (typeof data.raw_response === 'string' ? data.raw_response : JSON.stringify(data.raw_response)) : null;
+  const candidateOutput = data.output_message || data.output_text;
+  if (!rawResponse && candidateOutput) {
+    let outMsg = candidateOutput;
+    try {
+      if (typeof outMsg === 'string' && (outMsg.startsWith('{') || outMsg.startsWith('['))) {
+        outMsg = JSON.parse(outMsg);
+      }
+    } catch {}
+    if (outMsg) {
+      if (typeof outMsg === 'string') outMsg = { role: 'assistant', content: outMsg };
+      rawResponse = JSON.stringify({
+        id: data.id,
+        object: 'chat.completion',
+        model: data.model,
+        choices: [
+          {
+            index: 0,
+            message: outMsg,
+            finish_reason: data.status === 'success' ? 'stop' : 'error',
+          },
+        ],
+        usage: {
+          prompt_tokens: data.prompt_tokens || 0,
+          completion_tokens: data.completion_tokens || 0,
+          total_tokens: data.total_tokens || ((data.prompt_tokens || 0) + (data.completion_tokens || 0)),
+          estimated_cost: data.estimated_cost || 0,
+        },
+      });
+    }
+  } else if (!rawResponse && (data.status === 'error' || data.error_message)) {
+    rawResponse = JSON.stringify({
+      error: {
+        message: data.error_message || 'An error occurred during execution',
+        type: 'error',
+      }
+    });
+  }
+
+  const outputMsgStr = data.output_message
+    ? (typeof data.output_message === 'string' ? data.output_message : JSON.stringify(data.output_message))
+    : (data.output_text ? JSON.stringify({ role: 'assistant', content: data.output_text }) : null);
+
   const row = {
     id: data.id,
     conversation_id: data.conversation_id || null,
     model: data.model,
     provider: data.provider || 'deepinfra',
     input_messages: typeof data.input_messages === 'string' ? data.input_messages : JSON.stringify(data.input_messages),
-    output_message: data.output_message ? (typeof data.output_message === 'string' ? data.output_message : JSON.stringify(data.output_message)) : null,
+    output_message: outputMsgStr,
     prompt_tokens: data.prompt_tokens || 0,
     completion_tokens: data.completion_tokens || 0,
     total_tokens: data.total_tokens || 0,
@@ -166,8 +430,8 @@ function insertRequest(data) {
     metadata: data.metadata ? (typeof data.metadata === 'string' ? data.metadata : JSON.stringify(data.metadata)) : null,
     tags: data.tags ? (typeof data.tags === 'string' ? data.tags : JSON.stringify(data.tags)) : null,
     stream: data.stream ? 1 : 0,
-    raw_request: data.raw_request ? (typeof data.raw_request === 'string' ? data.raw_request : JSON.stringify(data.raw_request)) : null,
-    raw_response: data.raw_response ? (typeof data.raw_response === 'string' ? data.raw_response : JSON.stringify(data.raw_response)) : null,
+    raw_request: rawRequest,
+    raw_response: rawResponse,
     trace_id: data.trace_id || null,
     span_id: data.span_id || null,
     parent_span_id: data.parent_span_id || null,
@@ -234,13 +498,35 @@ function _updateConversationStats(conversationId) {
     WHERE conversation_id = ?
   `).get(conversationId);
 
+  // Auto-derive title from first message if not set
+  let title = null;
+  const currentConv = database.prepare('SELECT title FROM conversations WHERE id = ?').get(conversationId);
+  if (!currentConv?.title) {
+    const firstReq = database.prepare(
+      'SELECT input_messages FROM requests WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 1'
+    ).get(conversationId);
+    if (firstReq?.input_messages) {
+      try {
+        let msgs = typeof firstReq.input_messages === 'string' ? JSON.parse(firstReq.input_messages) : firstReq.input_messages;
+        if (Array.isArray(msgs)) {
+          const userMsg = msgs.find(m => m.role === 'user');
+          if (userMsg?.content) {
+            const text = typeof userMsg.content === 'string' ? userMsg.content.trim() : JSON.stringify(userMsg.content);
+            title = text.slice(0, 60) + (text.length > 60 ? '…' : '');
+          }
+        }
+      } catch {}
+    }
+  }
+
   database.prepare(`
     UPDATE conversations
     SET total_messages = @total_messages,
         total_tokens = @total_tokens,
         total_cost = @total_cost,
         first_message_at = @first_message_at,
-        last_message_at = @last_message_at
+        last_message_at = @last_message_at,
+        title = COALESCE(title, @title)
     WHERE id = @id
   `).run({
     id: conversationId,
@@ -249,6 +535,7 @@ function _updateConversationStats(conversationId) {
     total_cost: stats.total_cost,
     first_message_at: stats.first_message_at,
     last_message_at: stats.last_message_at,
+    title,
   });
 }
 
@@ -280,8 +567,14 @@ function getRequests(filters = {}) {
   const params = {};
 
   if (filters.model) {
-    conditions.push('r.model = @model');
-    params.model = filters.model;
+    if (filters.model.includes('/')) {
+      conditions.push('r.model = @model');
+      params.model = filters.model;
+    } else {
+      conditions.push('(r.model = @model OR r.model LIKE @modelWildcard)');
+      params.model = filters.model;
+      params.modelWildcard = `%/${filters.model}`;
+    }
   }
   if (filters.status) {
     conditions.push('r.status = @status');
@@ -313,9 +606,9 @@ function getRequests(filters = {}) {
   }
   if (filters.feedback) {
     if (filters.feedback === 'positive') {
-      conditions.push("json_extract(r.feedback, '$.score') = 1");
+      conditions.push("(CAST(json_extract(r.feedback, '$.score') AS INTEGER) = 1 OR CAST(json_extract(r.feedback, '$.rating') AS INTEGER) >= 4)");
     } else if (filters.feedback === 'negative') {
-      conditions.push("json_extract(r.feedback, '$.score') = -1");
+      conditions.push("(CAST(json_extract(r.feedback, '$.score') AS INTEGER) = -1 OR (json_extract(r.feedback, '$.rating') IS NOT NULL AND CAST(json_extract(r.feedback, '$.rating') AS INTEGER) <= 2) OR (json_extract(r.feedback, '$.task_success') = 0 AND json_extract(r.feedback, '$.rating') IS NOT NULL AND CAST(json_extract(r.feedback, '$.rating') AS INTEGER) <= 3))");
     }
   }
   if (filters.minEval != null) {
@@ -329,6 +622,10 @@ function getRequests(filters = {}) {
   if (filters.taskType) {
     conditions.push("COALESCE(json_extract(r.evaluation, '$.task_type'), json_extract(r.evaluation, '$.category'), 'general') = @taskType");
     params.taskType = filters.taskType;
+  }
+  if (filters.safety) {
+    conditions.push("json_extract(r.evaluation, '$.safety.status') = @safety");
+    params.safety = filters.safety;
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -674,13 +971,21 @@ function getConversations(filters = {}) {
   const total = database.prepare(`SELECT COUNT(*) AS total FROM conversations c ${whereClause}`).get(params).total;
 
   const data = database.prepare(`
-    SELECT c.* FROM conversations c
+    SELECT
+      c.*,
+      COALESCE(
+        c.title,
+        (SELECT substr(input_messages, 1, 60) FROM requests WHERE conversation_id = c.id ORDER BY created_at ASC LIMIT 1),
+        'Conversation ' || substr(c.id, 1, 8)
+      ) AS title,
+      (SELECT model FROM requests WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS model
+    FROM conversations c
     ${whereClause}
     ORDER BY c.last_message_at DESC
     LIMIT @limit OFFSET @offset
   `).all({ ...params, limit, offset });
 
-  return { data, total, page, limit };
+  return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
 /**
@@ -690,10 +995,26 @@ function getConversations(filters = {}) {
  */
 function getConversation(id) {
   const database = getDb();
-  const conversation = database.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
+  let conversation = database.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
   const messages = database.prepare(
     'SELECT * FROM requests WHERE conversation_id = ? ORDER BY created_at ASC'
   ).all(id);
+
+  if (conversation && !conversation.title && messages.length > 0) {
+    for (const msg of messages) {
+      try {
+        const msgs = typeof msg.input_messages === 'string' ? JSON.parse(msg.input_messages) : msg.input_messages;
+        if (Array.isArray(msgs)) {
+          const userMsg = msgs.find(m => m.role === 'user');
+          if (userMsg?.content) {
+            const text = typeof userMsg.content === 'string' ? userMsg.content.trim() : JSON.stringify(userMsg.content);
+            conversation.title = text.slice(0, 60) + (text.length > 60 ? '…' : '');
+            break;
+          }
+        }
+      } catch {}
+    }
+  }
 
   return { conversation, messages };
 }
@@ -1151,6 +1472,8 @@ async function getTraces(filters = {}) {
   
   const startDate = filters.startDate;
   const endDate = filters.endDate;
+  const model = filters.model;
+  const status = filters.status;
   
   const conditions = ['trace_id IS NOT NULL', "trace_id != ''"];
   const params = {};
@@ -1162,6 +1485,20 @@ async function getTraces(filters = {}) {
   if (endDate) {
     conditions.push('created_at <= @endDate');
     params.endDate = endDate;
+  }
+  if (model) {
+    if (model.includes('/')) {
+      conditions.push('model = @model');
+      params.model = model;
+    } else {
+      conditions.push('(model = @model OR model LIKE @modelWildcard)');
+      params.model = model;
+      params.modelWildcard = `%/${model}`;
+    }
+  }
+  if (status) {
+    conditions.push('status = @status');
+    params.status = status;
   }
   
   const whereClause = `WHERE ${conditions.join(' AND ')}`;

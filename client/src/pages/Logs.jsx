@@ -73,6 +73,7 @@ export default function Logs() {
   const [searchInput, setSearchInput] = useState(() => parseQueryParam(searchParams.get('search')));
   const [modelFilter, setModelFilter] = useState(() => parseQueryParam(searchParams.get('model')));
   const [statusFilter, setStatusFilter] = useState(() => parseQueryParam(searchParams.get('status')));
+  const [safetyFilter, setSafetyFilter] = useState(() => parseQueryParam(searchParams.get('safety')));
   const [feedbackFilter, setFeedbackFilter] = useState(() => parseQueryParam(searchParams.get('feedback')));
   const [taskTypeFilter, setTaskTypeFilter] = useState(() => parseQueryParam(searchParams.get('taskType')));
   const [sortBy, setSortBy] = useState('created_at');
@@ -102,6 +103,7 @@ export default function Logs() {
       filters: {
         model: modelFilter,
         status: statusFilter,
+        safety: safetyFilter,
         feedback: feedbackFilter,
         taskType: taskTypeFilter,
         startDate: dateRange.startDate,
@@ -119,6 +121,7 @@ export default function Logs() {
   const applySavedFilter = (filter) => {
     setModelFilter(filter.filters.model || '');
     setStatusFilter(filter.filters.status || '');
+    setSafetyFilter(filter.filters.safety || '');
     setFeedbackFilter(filter.filters.feedback || '');
     setTaskTypeFilter(filter.filters.taskType || '');
     setDateRange({
@@ -140,6 +143,7 @@ export default function Logs() {
   useEffect(() => {
     const nextStatus = parseQueryParam(searchParams.get('status'));
     const nextModel = parseQueryParam(searchParams.get('model'));
+    const nextSafety = parseQueryParam(searchParams.get('safety'));
     const nextFeedback = parseQueryParam(searchParams.get('feedback'));
     const nextTaskType = parseQueryParam(searchParams.get('taskType'));
     const nextStart = parseQueryParam(searchParams.get('startDate'));
@@ -148,6 +152,7 @@ export default function Logs() {
 
     if (nextStatus !== statusFilter) setStatusFilter(nextStatus);
     if (nextModel !== modelFilter) setModelFilter(nextModel);
+    if (nextSafety !== safetyFilter) setSafetyFilter(nextSafety);
     if (nextFeedback !== feedbackFilter) setFeedbackFilter(nextFeedback);
     if (nextTaskType !== taskTypeFilter) setTaskTypeFilter(nextTaskType);
     if (nextStart !== dateRange.startDate || nextEnd !== dateRange.endDate) {
@@ -167,6 +172,9 @@ export default function Logs() {
     
     if (statusFilter) next.set('status', statusFilter);
     else next.delete('status');
+
+    if (safetyFilter) next.set('safety', safetyFilter);
+    else next.delete('safety');
     
     if (feedbackFilter) next.set('feedback', feedbackFilter);
     else next.delete('feedback');
@@ -186,7 +194,7 @@ export default function Logs() {
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true });
     }
-  }, [modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, search, searchParams, setSearchParams]);
+  }, [modelFilter, statusFilter, safetyFilter, feedbackFilter, taskTypeFilter, dateRange, search, searchParams, setSearchParams]);
 
   const limit = 20;
 
@@ -197,6 +205,7 @@ export default function Logs() {
       search: search || undefined,
       model: modelFilter || undefined,
       status: statusFilter || undefined,
+      safety: safetyFilter || undefined,
       feedback: feedbackFilter || undefined,
       taskType: taskTypeFilter || undefined,
       startDate: dateRange.startDate || undefined,
@@ -204,7 +213,7 @@ export default function Logs() {
       sortBy,
       sortOrder,
     }),
-    [page, search, modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, sortBy, sortOrder]
+    [page, search, modelFilter, statusFilter, safetyFilter, feedbackFilter, taskTypeFilter, dateRange, sortBy, sortOrder]
   );
 
   const { data, loading, error, refetch } = useApi('/logs', { params, enabled: viewMode === 'list' });
@@ -221,19 +230,47 @@ export default function Logs() {
   }, [modelsData]);
 
   const modelOptions = useMemo(() => {
-    return [
-      { value: '', label: 'All Models' },
-      ...models.map((m) => ({
-        value: m.model_id || m.name,
-        label: formatModelName(m.model_id || m.name),
-      })),
-    ];
-  }, [models]);
+    const seen = new Set();
+    const options = [{ value: '', label: 'All Models' }];
+
+    for (const m of models) {
+      const id = m.id || m.model_id || m.name;
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        options.push({
+          value: id,
+          label: m.display_name || formatModelName(id),
+        });
+      }
+    }
+
+    if (Array.isArray(logs)) {
+      for (const log of logs) {
+        const id = log?.model;
+        if (id && id !== 'unknown' && id !== 'database-query' && !seen.has(id)) {
+          seen.add(id);
+          options.push({
+            value: id,
+            label: formatModelName(id),
+          });
+        }
+      }
+    }
+
+    return options;
+  }, [models, logs]);
 
   const statusOptions = useMemo(() => [
     { value: '', label: 'All Status' },
     { value: 'success', label: 'Success' },
     { value: 'error', label: 'Error' },
+  ], []);
+
+  const safetyOptions = useMemo(() => [
+    { value: '', label: 'All Safety' },
+    { value: 'safe', label: '🛡️ Safe' },
+    { value: 'flagged', label: '⚠️ Flagged' },
+    { value: 'unsafe', label: '🚫 Unsafe' },
   ], []);
 
   const feedbackOptions = useMemo(() => [
@@ -276,6 +313,7 @@ export default function Logs() {
     setSearchInput('');
     setModelFilter('');
     setStatusFilter('');
+    setSafetyFilter('');
     setFeedbackFilter('');
     setTaskTypeFilter('');
     setDateRange({ startDate: '', endDate: '' });
@@ -286,6 +324,7 @@ export default function Logs() {
     const query = new URLSearchParams({
       model: modelFilter || '',
       status: statusFilter || '',
+      safety: safetyFilter || '',
       feedback: feedbackFilter || '',
       taskType: taskTypeFilter || '',
       startDate: dateRange.startDate || '',
@@ -293,12 +332,13 @@ export default function Logs() {
       search: search || '',
     }).toString();
     window.open(`/api/logs/export/csv?${query}`, '_blank');
-  }, [modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, search]);
+  }, [modelFilter, statusFilter, safetyFilter, feedbackFilter, taskTypeFilter, dateRange, search]);
 
   const handleExportFinetuning = useCallback(() => {
     const query = new URLSearchParams({
       model: modelFilter || '',
       status: statusFilter || 'success',
+      safety: safetyFilter || '',
       feedback: feedbackFilter || '',
       taskType: taskTypeFilter || '',
       startDate: dateRange.startDate || '',
@@ -306,7 +346,7 @@ export default function Logs() {
       search: search || '',
     }).toString();
     window.open(`/api/logs/export/finetuning?${query}`, '_blank');
-  }, [modelFilter, statusFilter, feedbackFilter, taskTypeFilter, dateRange, search]);
+  }, [modelFilter, statusFilter, safetyFilter, feedbackFilter, taskTypeFilter, dateRange, search]);
 
   const handleViewTrace = useCallback((traceId) => {
     const next = new URLSearchParams(searchParams);
@@ -315,7 +355,7 @@ export default function Logs() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const hasFilters = Boolean(search || modelFilter || statusFilter || feedbackFilter || taskTypeFilter || dateRange.startDate);
+  const hasFilters = Boolean(search || modelFilter || statusFilter || safetyFilter || feedbackFilter || taskTypeFilter || dateRange.startDate);
 
   const columns = [
     {
@@ -351,6 +391,30 @@ export default function Logs() {
         const variant = val === 'success' ? 'success' : val === 'error' ? 'error' : 'warning';
         const displayVal = typeof val === 'string' ? val.charAt(0).toUpperCase() + val.slice(1) : val || '—';
         return <Badge variant={variant}>{displayVal}</Badge>;
+      },
+    },
+    {
+      key: 'safety',
+      label: 'Safety',
+      width: '105px',
+      render: (_val, row) => {
+        let status = 'safe';
+        try {
+          if (row.evaluation) {
+            const evalObj = typeof row.evaluation === 'string' ? JSON.parse(row.evaluation) : row.evaluation;
+            if (evalObj?.safety?.status) {
+              status = evalObj.safety.status;
+            }
+          }
+        } catch {}
+
+        if (status === 'unsafe') {
+          return <Badge variant="error">🚫 Unsafe</Badge>;
+        }
+        if (status === 'flagged') {
+          return <Badge variant="warning">⚠️ Flagged</Badge>;
+        }
+        return <Badge variant="success">🛡️ Safe</Badge>;
       },
     },
     {
@@ -691,6 +755,19 @@ export default function Logs() {
             placeholder="All Status"
             style={{ width: 140 }}
           />
+
+          {viewMode === 'list' && (
+            <CustomSelect
+              value={safetyFilter}
+              onChange={(val) => {
+                setSafetyFilter(val);
+                setPage(1);
+              }}
+              options={safetyOptions}
+              placeholder="All Safety"
+              style={{ width: 140 }}
+            />
+          )}
 
           {viewMode === 'list' && (
             <CustomSelect

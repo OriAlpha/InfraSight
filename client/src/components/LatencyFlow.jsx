@@ -6,14 +6,26 @@ import {
   Cpu,
   Sparkles,
   ShieldCheck,
+  ShieldAlert,
   CheckCircle2,
   AlertTriangle,
   GitFork,
   ArrowRight,
-  Info
+  Info,
+  FileCode
 } from 'lucide-react';
 import Badge from './ui/Badge';
 import Tooltip from './ui/Tooltip';
+
+import { computeLatencyBreakdown } from '../utils/latencyBreakdown';
+
+const ICON_MAP = {
+  FileCode,
+  ShieldCheck,
+  Cpu,
+  Sparkles,
+  CheckCircle2,
+};
 
 /**
  * LatencyFlow component renders an interactive execution timeline and latency flow
@@ -28,9 +40,6 @@ export default function LatencyFlow({ log, traceTree }) {
   const [hoveredStage, setHoveredStage] = useState(null);
 
   const totalLatency = Number(log?.latency_ms || 0);
-  const promptTokens = Number(log?.prompt_tokens || 0);
-  const completionTokens = Number(log?.completion_tokens || 0);
-  const isError = log?.status === 'error';
 
   // Check if trace has multiple spans to offer trace waterfall view
   const flattenedTraceSpans = useMemo(() => {
@@ -48,139 +57,10 @@ export default function LatencyFlow({ log, traceTree }) {
 
   const hasMultipleSpans = flattenedTraceSpans.length > 1;
 
-  // Derive request lifecycle timing breakdown
+  // Derive request lifecycle timing breakdown using shared, thoroughly tested algorithm
   const timing = useMemo(() => {
-    if (totalLatency <= 0) {
-      return {
-        gatewayMs: 0,
-        ttftMs: 0,
-        decodeMs: 0,
-        egressMs: 0,
-        tokensPerSec: 0,
-        msPerToken: 0,
-        promptTokPerSec: 0,
-        stages: []
-      };
-    }
-
-    // Explicit metadata metrics or derived realistic breakdown
-    let meta = {};
-    try {
-      meta = typeof log?.metadata === 'string' ? JSON.parse(log.metadata) : (log?.metadata || {});
-    } catch {
-      meta = {};
-    }
-
-    const explicitTtft = meta.ttft_ms || meta.time_to_first_token_ms;
-
-    // Gateway / Ingress: auth, routing, rate limit, PII guardrails
-    const gatewayMs = Math.max(8, Math.min(35, Math.round(totalLatency * 0.035)));
-    // Egress: payload packaging, eval queuing, safety verification
-    const egressMs = Math.max(6, Math.min(25, Math.round(totalLatency * 0.025)));
-
-    const remainingForModel = Math.max(10, totalLatency - gatewayMs - egressMs);
-
-    let ttftMs = 0;
-    let decodeMs = 0;
-
-    if (explicitTtft && explicitTtft < remainingForModel) {
-      ttftMs = Math.round(explicitTtft);
-      decodeMs = remainingForModel - ttftMs;
-    } else if (completionTokens > 0) {
-      // Prompt processing vs autoregressive token generation ratio
-      // Decode is typically 2.5x slower per token than prompt ingestion
-      const weightPrompt = Math.max(1, promptTokens);
-      const weightDecode = completionTokens * 2.2;
-      const promptRatio = Math.max(0.22, Math.min(0.55, weightPrompt / (weightPrompt + weightDecode)));
-
-      ttftMs = Math.round(remainingForModel * promptRatio);
-      decodeMs = remainingForModel - ttftMs;
-    } else {
-      ttftMs = remainingForModel;
-      decodeMs = 0;
-    }
-
-    // Safety clamp to ensure sum === totalLatency exactly
-    const adjustedDecode = Math.max(0, totalLatency - gatewayMs - ttftMs - egressMs);
-
-    const tokensPerSec = adjustedDecode > 0 && completionTokens > 0
-      ? (completionTokens / (adjustedDecode / 1000)).toFixed(1)
-      : '0.0';
-
-    const msPerToken = completionTokens > 0 && adjustedDecode > 0
-      ? (adjustedDecode / completionTokens).toFixed(1)
-      : '—';
-
-    const promptTokPerSec = ttftMs > 0 && promptTokens > 0
-      ? Math.round(promptTokens / (ttftMs / 1000))
-      : 0;
-
-    const stages = [
-      {
-        id: 'gateway',
-        name: 'Gateway & Ingress',
-        durationMs: gatewayMs,
-        pct: Number(((gatewayMs / totalLatency) * 100).toFixed(1)),
-        color: 'var(--accent-indigo, #6366f1)',
-        bg: 'rgba(99, 102, 241, 0.15)',
-        border: 'rgba(99, 102, 241, 0.35)',
-        icon: ShieldCheck,
-        status: 'Pass',
-        desc: 'Request routing, auth verification, rate limit check & PII scan',
-        detail: `${gatewayMs}ms validation overhead`
-      },
-      {
-        id: 'ttft',
-        name: 'Time to First Token (TTFT)',
-        durationMs: ttftMs,
-        pct: Number(((ttftMs / totalLatency) * 100).toFixed(1)),
-        color: 'var(--accent-purple, #8b5cf6)',
-        bg: 'rgba(139, 92, 246, 0.15)',
-        border: 'rgba(139, 92, 246, 0.35)',
-        icon: Cpu,
-        status: 'Optimal',
-        desc: `${promptTokens} prompt tokens ingested & KV-cache allocated`,
-        detail: promptTokPerSec > 0 ? `~${promptTokPerSec} tokens/sec ingestion` : 'Initial token generated'
-      },
-      {
-        id: 'decode',
-        name: 'Token Generation Stream',
-        durationMs: adjustedDecode,
-        pct: Number(((adjustedDecode / totalLatency) * 100).toFixed(1)),
-        color: isError ? 'var(--accent-rose, #f43f5e)' : 'var(--accent-cyan, #06b6d4)',
-        bg: isError ? 'rgba(244, 63, 94, 0.15)' : 'rgba(6, 182, 212, 0.15)',
-        border: isError ? 'rgba(244, 63, 94, 0.35)' : 'rgba(6, 182, 212, 0.35)',
-        icon: Sparkles,
-        status: isError ? 'Error' : 'Complete',
-        desc: isError ? 'Generation interrupted by error' : `${completionTokens} completion tokens decoded at ${tokensPerSec} tok/s`,
-        detail: completionTokens > 0 ? `${msPerToken} ms/token pace` : 'No tokens emitted'
-      },
-      {
-        id: 'egress',
-        name: 'Egress & Evaluation',
-        durationMs: egressMs,
-        pct: Number(((egressMs / totalLatency) * 100).toFixed(1)),
-        color: 'var(--accent-emerald, #10b981)',
-        bg: 'rgba(16, 185, 129, 0.15)',
-        border: 'rgba(16, 185, 129, 0.35)',
-        icon: CheckCircle2,
-        status: 'Queued',
-        desc: 'Streaming finalized, guardrails egress pass & eval pipeline scheduled',
-        detail: `${egressMs}ms post-processing`
-      }
-    ];
-
-    return {
-      gatewayMs,
-      ttftMs,
-      decodeMs: adjustedDecode,
-      egressMs,
-      tokensPerSec,
-      msPerToken,
-      promptTokPerSec,
-      stages
-    };
-  }, [totalLatency, promptTokens, completionTokens, isError, log?.metadata]);
+    return computeLatencyBreakdown(log);
+  }, [log]);
 
   // Waterfall timing for multi-span traces
   const traceWaterfall = useMemo(() => {
@@ -284,11 +164,83 @@ export default function LatencyFlow({ log, traceTree }) {
           )}
 
           {/* Quick Metrics Pills */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {timing.isGuardrailBlocked ? (
+              <>
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-full)',
+                    background: 'rgba(244, 63, 94, 0.12)',
+                    border: '1px solid rgba(244, 63, 94, 0.3)',
+                    color: 'var(--accent-rose)'
+                  }}
+                  title="Prompt was intercepted and rejected directly at the InfraSight gateway guardrail"
+                >
+                  🛡️ Guardrail Intercept: <strong style={{ color: '#fda4af' }}>{timing.infrasightMs}ms (100%)</strong>
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-full)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-muted)'
+                  }}
+                  title="Upstream model was not invoked — zero inference latency incurred"
+                >
+                  🤖 Upstream LLM: <strong style={{ color: 'var(--text-secondary)' }}>0ms (Bypassed)</strong>
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-full)',
+                    background: 'rgba(16, 185, 129, 0.08)',
+                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                    color: 'var(--accent-emerald)'
+                  }}
+                  title="Zero completion tokens generated — zero API inference cost billed"
+                >
+                  💰 Upstream Cost: <strong>$0.00</strong>
+                </span>
+              </>
+            ) : (
+              <>
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-full)',
+                    background: 'rgba(99, 102, 241, 0.12)',
+                    border: '1px solid rgba(99, 102, 241, 0.3)',
+                    color: 'var(--accent-indigo)'
+                  }}
+                  title="Total latency added by InfraSight gateway routing, PII guardrails, and egress logging"
+                >
+                  ⚡ InfraSight: <strong style={{ color: '#a5b4fc' }}>{timing.infrasightMs}ms ({timing.infrasightPct}%)</strong>
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-full)',
+                    background: 'rgba(16, 185, 129, 0.1)',
+                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                    color: 'var(--accent-emerald)'
+                  }}
+                  title="Time spent waiting on the upstream model inference (TTFT + decode generation)"
+                >
+                  🤖 Upstream LLM: <strong style={{ color: '#6ee7b7' }}>{timing.upstreamMs}ms ({timing.upstreamPct}%)</strong>
+                </span>
+              </>
+            )}
             <span style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
               Total: <strong style={{ color: 'var(--accent-cyan)' }}>{totalLatency >= 1000 ? `${(totalLatency / 1000).toFixed(2)}s` : `${totalLatency}ms`}</strong>
             </span>
-            {timing.tokensPerSec !== '0.0' && (
+            {!timing.isGuardrailBlocked && timing.tokensPerSec !== '0.0' && (
               <span style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: 'var(--radius-full)', background: 'rgba(6, 182, 212, 0.08)', border: '1px solid rgba(6, 182, 212, 0.2)', color: 'var(--accent-cyan)' }}>
                 Speed: <strong>{timing.tokensPerSec} tok/s</strong>
               </span>
@@ -376,7 +328,7 @@ export default function LatencyFlow({ log, traceTree }) {
             }}
           >
             {timing.stages.map((stage, idx) => {
-              const StageIcon = stage.icon;
+              const StageIcon = ICON_MAP[stage.icon] || Activity;
               const isHovered = hoveredStage === stage.id;
 
               return (
@@ -431,6 +383,57 @@ export default function LatencyFlow({ log, traceTree }) {
                   <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255, 255, 255, 0.04)', fontSize: '0.7rem', color: 'var(--text-dim)' }}>
                     {stage.detail}
                   </div>
+
+                  {/* Detailed Pipeline Steps Checklist */}
+                  {stage.steps && stage.steps.length > 0 && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
+                        Steps Involved
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {stage.steps.map((st, sIdx) => {
+                          const isBypassed = st.state === 'bypassed';
+                          const isSkipped = st.state === 'skipped';
+                          const isErr = st.state === 'error';
+
+                          return (
+                            <div key={sIdx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: '0.72rem' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                                {isErr ? (
+                                  <AlertTriangle size={12} style={{ color: 'var(--accent-rose)', flexShrink: 0 }} />
+                                ) : isBypassed ? (
+                                  <Info size={12} style={{ color: 'var(--accent-amber)', flexShrink: 0 }} />
+                                ) : isSkipped ? (
+                                  <Clock size={12} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
+                                ) : (
+                                  <CheckCircle2 size={12} style={{ color: stage.color, flexShrink: 0 }} />
+                                )}
+                                <span style={{
+                                  color: isBypassed || isSkipped ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap'
+                                }}>
+                                  {st.name}
+                                </span>
+                              </div>
+                              <span
+                                style={{
+                                  color: isErr ? 'var(--accent-rose)' : isBypassed ? 'var(--accent-amber)' : isSkipped ? 'var(--text-dim)' : 'var(--text-secondary)',
+                                  fontSize: '0.68rem',
+                                  flexShrink: 0,
+                                  fontWeight: isBypassed ? 600 : 400
+                                }}
+                                className="mono"
+                              >
+                                {st.status}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -442,8 +445,8 @@ export default function LatencyFlow({ log, traceTree }) {
               marginTop: 16,
               padding: '12px 16px',
               borderRadius: 'var(--radius-md)',
-              background: 'rgba(6, 182, 212, 0.03)',
-              border: '1px solid rgba(6, 182, 212, 0.15)',
+              background: timing.isGuardrailBlocked ? 'rgba(244, 63, 94, 0.04)' : 'rgba(6, 182, 212, 0.03)',
+              border: `1px solid ${timing.isGuardrailBlocked ? 'rgba(244, 63, 94, 0.2)' : 'rgba(6, 182, 212, 0.15)'}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
@@ -452,27 +455,47 @@ export default function LatencyFlow({ log, traceTree }) {
               fontSize: '0.8125rem'
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}>
-              <Zap size={15} style={{ color: 'var(--accent-cyan)' }} />
-              <span>
-                Streaming Speed: <strong style={{ color: 'var(--text-primary)' }}>{timing.tokensPerSec} tokens/sec</strong>
-              </span>
-              <span style={{ color: 'var(--text-dim)' }}>•</span>
-              <span>
-                Inter-token Latency: <strong style={{ color: 'var(--text-primary)' }}>{timing.msPerToken}</strong>
-              </span>
-            </div>
+            {timing.isGuardrailBlocked ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}>
+                  <ShieldAlert size={15} style={{ color: 'var(--accent-rose)' }} />
+                  <span>
+                    Gateway Guardrail Intercept: <strong style={{ color: 'var(--text-primary)' }}>Upstream inference bypassed. Zero tokens billed to model.</strong>
+                  </span>
+                </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-              <Info size={13} />
-              <span>
-                {totalLatency < 800
-                  ? '⚡ Sub-second execution: Fast response meeting interactive latency target.'
-                  : totalLatency < 2500
-                  ? '✓ Standard latency: Balanced generation speed for current token volume.'
-                  : '⏳ Long generation: Consider streaming chunks or reducing prompt size.'}
-              </span>
-            </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  <ShieldCheck size={14} style={{ color: 'var(--accent-indigo)', flexShrink: 0 }} />
+                  <span>
+                    InfraSight Security Policy: <strong>{timing.infrasightMs}ms (100%)</strong> · <strong style={{ color: 'var(--accent-emerald)' }}>⚡ Intercepted in {totalLatency}ms</strong>
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}>
+                  <Zap size={15} style={{ color: 'var(--accent-cyan)' }} />
+                  <span>
+                    Streaming Speed: <strong style={{ color: 'var(--text-primary)' }}>{timing.tokensPerSec} tokens/sec</strong>
+                  </span>
+                  <span style={{ color: 'var(--text-dim)' }}>•</span>
+                  <span>
+                    Inter-token Latency: <strong style={{ color: 'var(--text-primary)' }}>{timing.msPerToken}</strong>
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  <ShieldCheck size={14} style={{ color: 'var(--accent-indigo)', flexShrink: 0 }} />
+                  <span>
+                    InfraSight overhead: <strong>{timing.infrasightMs}ms ({timing.infrasightPct}%)</strong> vs Upstream LLM: <strong>{timing.upstreamMs}ms ({timing.upstreamPct}%)</strong>
+                    {' · '}
+                    <strong style={{ color: timing.infrasightPct < 8 ? 'var(--accent-emerald)' : 'var(--accent-amber)' }}>
+                      {timing.infrasightPct < 8 ? '⚡ Negligible proxy latency' : '✓ Normal proxy throughput'}
+                    </strong>
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         </>
       ) : (

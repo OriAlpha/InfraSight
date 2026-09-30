@@ -107,7 +107,7 @@ export default function LogDetail() {
         const userInputs = inputs.filter(m => m.role === 'user');
         userInputs.forEach(msg => {
           msgs.push({
-            id: `${span.span_id}-user-${msg.content.substring(0, 10)}`,
+            id: `${span.span_id}-user-${typeof msg.content === 'string' ? msg.content.substring(0, 10) : 'user'}`,
             role: 'user',
             content: msg.content,
             spanName: span.span_name
@@ -308,25 +308,60 @@ export default function LogDetail() {
   }
 
   let requestBody = null;
+  const rawReq = log.raw_request || log.request_body;
   try {
-    requestBody = log.request_body
-      ? typeof log.request_body === 'string'
-        ? JSON.parse(log.request_body)
-        : log.request_body
+    requestBody = rawReq
+      ? typeof rawReq === 'string'
+        ? JSON.parse(rawReq)
+        : rawReq
       : null;
   } catch {
-    requestBody = log.request_body;
+    requestBody = rawReq;
+  }
+
+  // Fallback: If raw request_body wasn't explicitly stored, reconstruct from inputMessages
+  if (!requestBody && inputMessages && inputMessages.length > 0) {
+    requestBody = {
+      model: log.model || 'unknown',
+      messages: inputMessages,
+      temperature: log.temperature != null ? Number(log.temperature) : 0.7,
+      stream: Boolean(log.stream),
+    };
+    if (log.max_tokens) requestBody.max_tokens = Number(log.max_tokens);
   }
 
   let responseBody = null;
+  const rawRes = log.raw_response || log.response_body;
   try {
-    responseBody = log.response_body
-      ? typeof log.response_body === 'string'
-        ? JSON.parse(log.response_body)
-        : log.response_body
+    responseBody = rawRes
+      ? typeof rawRes === 'string'
+        ? JSON.parse(rawRes)
+        : rawRes
       : null;
   } catch {
-    responseBody = log.response_body;
+    responseBody = rawRes;
+  }
+
+  // Fallback: If raw response_body wasn't explicitly stored, reconstruct from outputMessage
+  if (!responseBody && outputMessage) {
+    responseBody = {
+      id: log.id,
+      object: 'chat.completion',
+      model: log.model,
+      choices: [
+        {
+          index: 0,
+          message: outputMessage,
+          finish_reason: log.status === 'success' ? 'stop' : 'error',
+        },
+      ],
+      usage: {
+        prompt_tokens: log.prompt_tokens || 0,
+        completion_tokens: log.completion_tokens || 0,
+        total_tokens: log.total_tokens || 0,
+        estimated_cost: log.cost || log.estimated_cost || 0,
+      },
+    };
   }
 
   const handleOpenInPlayground = () => {
@@ -536,7 +571,7 @@ export default function LogDetail() {
       {/* Evaluations & Feedback panels */}
       <div className="eval-dashboard-grid">
         <FeedbackPanel logId={log.id} initialFeedback={log.feedback} onSave={refetch} />
-        <EvaluationPanel evaluation={log.evaluation} />
+        <EvaluationPanel evaluation={log.evaluation} log={log} />
       </div>
 
       {/* View Mode Toggle */}
@@ -728,8 +763,18 @@ export default function LogDetail() {
   );
 }
 
+function safeParseJson(val) {
+  if (!val) return null;
+  if (typeof val === 'object') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return null;
+  }
+}
+
 function FeedbackPanel({ logId, initialFeedback, onSave }) {
-  const parsed = initialFeedback ? (typeof initialFeedback === 'string' ? JSON.parse(initialFeedback) : initialFeedback) : null;
+  const parsed = safeParseJson(initialFeedback);
   const [rating, setRating] = useState(parsed?.rating || null);
   const [comment, setComment] = useState(parsed?.comment || '');
   const [taskSuccess, setTaskSuccess] = useState(parsed?.task_success === true);
@@ -740,7 +785,7 @@ function FeedbackPanel({ logId, initialFeedback, onSave }) {
 
   // Sync local state when initialFeedback changes (e.g. after refetch)
   useEffect(() => {
-    const p = initialFeedback ? (typeof initialFeedback === 'string' ? JSON.parse(initialFeedback) : initialFeedback) : null;
+    const p = safeParseJson(initialFeedback);
     setRating(p?.rating || null);
     setComment(p?.comment || '');
     setTaskSuccess(p?.task_success === true);
@@ -866,8 +911,8 @@ function FeedbackPanel({ logId, initialFeedback, onSave }) {
   );
 }
 
-function EvaluationPanel({ evaluation }) {
-  const evalObj = evaluation ? (typeof evaluation === 'string' ? JSON.parse(evaluation) : evaluation) : null;
+function EvaluationPanel({ evaluation, log }) {
+  const evalObj = safeParseJson(evaluation);
   const safety = evalObj?.safety || null;
 
   if (!evalObj) {
@@ -893,24 +938,77 @@ function EvaluationPanel({ evaluation }) {
     );
   }
 
-  const hasRAG = evalObj.faithfulness != null || evalObj.answer_relevancy != null || evalObj.context_precision != null || evalObj.context_recall != null || evalObj.hallucination_rate != null;
-  const hasRetrieval = evalObj.recall_at_k != null || evalObj.precision_at_k != null || evalObj.mrr != null;
-  const hasNLP = evalObj.exact_match != null || evalObj.f1_score != null || evalObj.bleu != null || evalObj.rouge_l != null;
-  const hasAgent = evalObj.tool_success_rate != null || evalObj.iteration_count != null || evalObj.tool_selection_accuracy != null || evalObj.planning_accuracy != null || evalObj.goal_completion_rate != null;
+  const metaObj = safeParseJson(log?.metadata) || {};
+  const hasContext = Boolean(
+    metaObj.context ||
+    metaObj.retrieved_chunks ||
+    metaObj.chunks ||
+    metaObj.retrieved_ids ||
+    log?.span_type === 'agent' ||
+    log?.span_type === 'tool' ||
+    log?.span_type === 'chain' ||
+    evalObj.applicable_metrics?.includes('faithfulness')
+  );
+  const isAgentSpan = Boolean(log?.span_type === 'agent' || log?.span_type === 'tool' || log?.span_type === 'chain');
+
+  // Ground truth reference detection
+  const groundTruthText = metaObj.ground_truth || metaObj.expected_output || metaObj.reference || metaObj.target || evalObj.ground_truth || evalObj.expected_answer || null;
+  const hasGroundTruthRef = Boolean(groundTruthText);
+
+  // NLP / Ground Truth metrics are ONLY valid when there is an actual reference ground truth target
+  const hasNLP = hasGroundTruthRef && Boolean(
+    evalObj.exact_match != null ||
+    evalObj.f1_score != null ||
+    evalObj.bleu != null ||
+    evalObj.rouge_l != null
+  );
+
+  const hasRetrieval = hasContext && Boolean(
+    evalObj.recall_at_k != null ||
+    evalObj.precision_at_k != null ||
+    evalObj.mrr != null
+  );
+
+  // RAG & Retrieval metrics are only valid if context was actually provided or retrieved
+  const hasRAG = hasContext && Boolean(
+    evalObj.faithfulness != null ||
+    evalObj.answer_relevancy != null ||
+    evalObj.context_precision != null ||
+    evalObj.context_recall != null ||
+    evalObj.context_relevance != null ||
+    evalObj.hallucination_rate != null ||
+    hasRetrieval
+  );
+
+  const hasAgent = isAgentSpan && Boolean(
+    evalObj.tool_success_rate != null ||
+    evalObj.iteration_count != null ||
+    evalObj.tool_selection_accuracy != null ||
+    evalObj.planning_accuracy != null ||
+    evalObj.goal_completion_rate != null
+  );
 
   // Task-specific metrics detection
   const taskType = evalObj.task_type || null;
   const taskMetricKeys = Array.isArray(evalObj.task_metrics) ? evalObj.task_metrics : [];
-  const hasTaskMetrics = taskType && taskMetricKeys.length > 0;
+  const hasTaskMetrics = Boolean(taskType && taskMetricKeys.length > 0);
 
-  // Set default tab based on available data — prefer task metrics for playground runs
-  let defaultTab = 'task';
-  if (hasTaskMetrics) defaultTab = 'task';
-  else if (hasRAG) defaultTab = 'rag';
-  else if (hasNLP || hasRetrieval) defaultTab = 'nlp';
-  else if (hasAgent) defaultTab = 'agent';
+  // Build the list of active/applicable tabs
+  const availableTabs = [
+    hasTaskMetrics && 'task',
+    hasRAG && 'rag',
+    hasNLP && 'nlp',
+    hasAgent && 'agent',
+  ].filter(Boolean);
 
+  const defaultTab = availableTabs[0] || 'task';
   const [activeTab, setActiveTab] = useState(defaultTab);
+
+  useEffect(() => {
+    if (!availableTabs.includes(activeTab)) {
+      setActiveTab(availableTabs[0] || 'task');
+    }
+  }, [availableTabs.join(','), defaultTab]);
 
   // Circular Score Configuration
   const score = Number(evalObj.score || 0);
@@ -1167,11 +1265,32 @@ function EvaluationPanel({ evaluation }) {
                 </div>
               </div>
             )}
+
+            {hasRetrieval && (
+              <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
+                  Retrieval Performance Indices
+                </div>
+                {renderMetricRow('Recall@K', evalObj.recall_at_k, 1.0, false, 'Fraction of all relevant items successfully retrieved', 'var(--accent-pink)')}
+                {renderMetricRow('Precision@K', evalObj.precision_at_k, 1.0, false, 'Fraction of retrieved items that are relevant', 'var(--accent-amber)')}
+                {renderMetricRow('Mean Reciprocal Rank (MRR)', evalObj.mrr, 1.0, false, 'Reciprocal rank of the first relevant retrieved item', 'var(--accent-indigo)')}
+              </div>
+            )}
           </>
         )}
 
-        {activeTab === 'nlp' && (
+        {activeTab === 'nlp' && hasNLP && (
           <>
+            {groundTruthText && (
+              <div className="eval-metric-card animate-fade-in" style={{ background: 'rgba(255, 255, 255, 0.02)', borderLeft: '3px solid var(--accent-purple)', padding: '12px 16px' }}>
+                <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4 }}>
+                  Reference Ground Truth Target
+                </div>
+                <div style={{ fontSize: '0.8125rem', color: 'var(--text-primary)', fontStyle: 'italic', wordBreak: 'break-word', lineHeight: 1.5 }}>
+                  "{groundTruthText}"
+                </div>
+              </div>
+            )}
             {evalObj.exact_match != null && (
               <div className="eval-metric-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
@@ -1186,17 +1305,6 @@ function EvaluationPanel({ evaluation }) {
             {renderMetricRow('F1 Token Score', evalObj.f1_score, 1.0, false, 'Token overlap ratio (Precision/Recall average)', 'var(--accent-blue)')}
             {renderMetricRow('BLEU Score', evalObj.bleu, 1.0, false, 'n-gram similarity benchmark for translation & fluency', 'var(--accent-cyan)')}
             {renderMetricRow('ROUGE-L Score', evalObj.rouge_l, 1.0, false, 'Longest Common Subsequence recall rate', 'var(--accent-purple)')}
-            
-            {hasRetrieval && (
-              <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 600 }}>
-                  Retrieval Performance Indices
-                </div>
-                {renderMetricRow('Recall@K', evalObj.recall_at_k, 1.0, false, 'Fraction of all relevant items successfully retrieved', 'var(--accent-pink)')}
-                {renderMetricRow('Precision@K', evalObj.precision_at_k, 1.0, false, 'Fraction of retrieved items that are relevant', 'var(--accent-amber)')}
-                {renderMetricRow('Mean Reciprocal Rank (MRR)', evalObj.mrr, 1.0, false, 'Reciprocal rank of the first relevant retrieved item', 'var(--accent-indigo)')}
-              </div>
-            )}
           </>
         )}
 

@@ -17,7 +17,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { useApi } from '../hooks/useApi';
+import { useApi, fetchApi } from '../hooks/useApi';
 import JsonViewer from '../components/ui/JsonViewer';
 import Badge from '../components/ui/Badge';
 import { parseDate } from '../utils/date';
