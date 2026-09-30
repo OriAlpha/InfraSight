@@ -23,6 +23,59 @@ test('feedback and model filtering test suite', async (t) => {
   runMigrations();
   const db = getDb();
 
+  // Insert deterministic fixture rows for self-contained test execution (e.g., in clean CI environments)
+  const fixtureIds = ['fixture-test-neg-1', 'fixture-test-pos-1', 'fixture-test-qwen-1', 'fixture-test-trace-span-1'];
+
+  insertRequest({
+    id: 'fixture-test-neg-1',
+    model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+    input_messages: [{ role: 'user', content: 'What is 2+2?' }],
+    output_message: { role: 'assistant', content: '5' },
+    status: 'success',
+    latency_ms: 150,
+    feedback: JSON.stringify({ score: -1, rating: 1, task_success: false, comment: 'Incorrect arithmetic' })
+  });
+
+  insertRequest({
+    id: 'fixture-test-pos-1',
+    model: 'deepseek-ai/DeepSeek-V3',
+    input_messages: [{ role: 'user', content: 'What is the capital of France?' }],
+    output_message: { role: 'assistant', content: 'Paris' },
+    status: 'success',
+    latency_ms: 220,
+    feedback: JSON.stringify({ score: 1, rating: 5, task_success: true, comment: 'Accurate and fast' })
+  });
+
+  insertRequest({
+    id: 'fixture-test-qwen-1',
+    model: 'Qwen/Qwen2.5-72B-Instruct',
+    input_messages: [{ role: 'user', content: 'Write a poem' }],
+    output_message: { role: 'assistant', content: 'Roses are red' },
+    status: 'success',
+    latency_ms: 310,
+    feedback: JSON.stringify({ score: 1, rating: 4, task_success: true, comment: 'Creative poem' })
+  });
+
+  insertRequest({
+    id: 'fixture-test-trace-span-1',
+    model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+    trace_id: 'fixture-trace-session-1',
+    span_id: 'span-fixture-root-1',
+    parent_span_id: null,
+    span_name: 'Fixture Test Agent',
+    span_type: 'agent',
+    input_messages: [{ role: 'user', content: 'Run trace test' }],
+    output_message: { role: 'assistant', content: 'Trace response' },
+    status: 'success',
+    latency_ms: 400
+  });
+
+  t.after(() => {
+    try {
+      db.prepare(`DELETE FROM requests WHERE id IN (${fixtureIds.map(() => '?').join(',')})`).run(...fixtureIds);
+    } catch {}
+  });
+
   await t.test('getRequests filters by feedback=negative correctly', () => {
     const res = getRequests({ feedback: 'negative', limit: 20 });
     assert.ok(res.total > 0, 'Should find negative feedback requests');
