@@ -214,6 +214,73 @@ EVALUATION_RECOVERY_HOURS=24
 
 ---
 
+## 🧠 Automated Evaluation & Domain-Specific 5-Metric Mapping
+
+InfraSight avoids generic "one-size-fits-all" scoring by automatically detecting the task intent from the user prompt and system instructions. Rather than applying irrelevant metrics (e.g. testing RAG faithfulness on a creative poem, or code execution on customer support chat), the evaluation pipeline scores **exactly 5 domain-specific criteria** (1.0 to 5.0 scale) tailored to the task type.
+
+### 📋 Domain-Specific 5-Metric Mapping Table
+
+| Task Type | Intent & Scope | Evaluated Metrics (Exactly 5) | Focus & Optimization Goal |
+|:---|:---|:---|:---|
+| **`summarization`** 📝 | Condensing, abstracting, or briefing long text | `conciseness`, `information_retention`, `coherence`, `instruction_following`, `completeness` | Maximizes density of key facts without fluff or lost core details. |
+| **`paraphrase`** 🔄 | Rewriting, reframing, or restating text | `semantic_preservation`, `lexical_diversity`, `fluency`, `instruction_following`, `coherence` | Preserves original intent while avoiding trivial word-swaps. |
+| **`translation`** 🌐 | Cross-lingual language translation | `translation_accuracy`, `fluency`, `semantic_preservation`, `instruction_following`, `tone_relevance` | Idiomatic naturalness, terminology precision, and appropriate formality. |
+| **`question_answering`** ❓ | Fact retrieval, knowledge lookup, explanations | `factual_accuracy`, `completeness`, `instruction_following`, `coherence`, `conciseness` | Direct, grounded, and verified information retrieval. |
+| **`code_generation`** 💻 | Writing scripts, functions, debugging, syntax | `code_correctness`, `code_efficiency`, `readability`, `instruction_following`, `completeness` | Bug-free runtime logic, algorithmic complexity, and idiomatic style. |
+| **`creative_writing`** ✨ | Storytelling, copy, essays, ideation | `creativity`, `fluency`, `lexical_diversity`, `coherence`, `instruction_following` | Originality, vivid phrasing, voice consistency, and reader engagement. |
+| **`classification`** 🏷️ | Categorization, intent labeling, sentiment | `classification_accuracy`, `reasoning_quality`, `format_compliance`, `instruction_following`, `conciseness` | Label correctness, schema obedience, and sound categorization logic. |
+| **`extraction`** 🔍 | Named entities, JSON schemas, field parsing | `extraction_precision`, `format_compliance`, `completeness`, `instruction_following`, `information_retention` | Schema validity, zero hallucinated fields, and high extraction recall. |
+| **`conversation`** 💬 | Multi-turn chats, support dialogues, assistants | `conversational_flow`, `coherence`, `helpfulness`, `instruction_following`, `tone_relevance` | Natural context transitions, empathy, persona stability, and user help. |
+| **`general`** ⚡ | Open-ended queries and fallback tasks | `instruction_following`, `helpfulness`, `coherence`, `fluency`, `completeness` | Core instruction compliance, structure, and general utility. |
+
+---
+
+### 🔍 Metric Definitions Reference
+
+| Metric | Dimension | Description |
+|:---|:---|:---|
+| `instruction_following` | Control | Rigorously penalizes unsolicited chatter, unrequested multiple options, or constraint breaches. |
+| `conciseness` | Density | Brevity and information density; penalizes verbose filler phrases. |
+| `information_retention` | Fidelity | Percentage of essential facts and details preserved from the source prompt. |
+| `semantic_preservation` | Alignment | Faithful preservation of original meaning without semantic drift. |
+| `lexical_diversity` | Vocabulary | Use of varied, context-appropriate vocabulary rather than superficial keyword swapping. |
+| `fluency` | Linguistics | Grammatical correctness, syntax, and publication-ready natural language quality. |
+| `coherence` | Structure | Logical transitions, structure, paragraph flow, and clarity. |
+| `factual_accuracy` | Truthfulness | Truthfulness, factual precision, and elimination of unsupported claims. |
+| `code_correctness` | Syntax/Logic | Correct functional execution, edge-case safety, and language best practices. |
+| `code_efficiency` | Performance | Algorithmic time/space complexity, resource consumption, and elegance. |
+| `readability` | Clarity | Clear formatting, naming conventions, and inline code documentation. |
+| `translation_accuracy` | Fidelity | Terminology precision and fidelity between source and target languages. |
+| `tone_relevance` | Persona | Consistency with the desired persona, register (e.g. formal vs. informal), or corporate voice. |
+| `classification_accuracy` | Grounding | Accuracy of predicted classes, tags, or categories against requirements. |
+| `reasoning_quality` | Logic | Soundness, logic, and justification provided for decisions or classifications. |
+| `extraction_precision` | Schema | Precision and formatting accuracy of extracted entities, key-values, and nested JSON. |
+| `format_compliance` | Syntax | Strict adherence to requested schemas (JSON, markdown tables, XML, bullet points). |
+| `conversational_flow` | Dialogue | Multi-turn context retention, smooth conversational turn-taking, and dialogue continuity. |
+| `helpfulness` | Utility | Direct problem resolution and practical value delivered to the user. |
+| `completeness` | Coverage | Thoroughness in answering every explicit sub-clause and constraint in the user prompt. |
+
+---
+
+### 🛡️ Contextual Evaluation Suites & Safety Guardrails
+
+In addition to the 5 domain-specific metrics, InfraSight conditionally activates specialized evaluation suites when relevant context or guardrails are present:
+
+1. **RAG & Retrieval Suite** *(Active when document chunks/context are present)*:
+   - Faithfulness, Answer Relevancy, Context Precision, Context Recall, Context Relevance, Hallucination Rate, Recall@K, Precision@K, and MRR.
+2. **Ground Truth NLP Suite** *(Active when reference answers are provided in metadata or user feedback)*:
+   - Exact Match (EM), F1-Score, BLEU, and ROUGE-1 / ROUGE-2 / ROUGE-L.
+3. **Agent & Tool Execution Suite** *(Active on multi-span agent traces)*:
+   - Tool Success Rate, Tool Selection Accuracy, Planning Accuracy, and Goal Completion Rate.
+4. **Safety & Adversarial Guardrails Suite**:
+   - Classifies requests into `🛡️ Safe`, `⚠️ Flagged`, and `🚫 Unsafe`.
+   - Intercepts and records adversarial patterns (Prompt Injections, Persona Jailbreaks, Harmful/Toxic content, Document Injections, and Security Control Bypasses) following the standard intercept notification:
+     ```text
+     "Blocked by guardrail: prompt contains forbidden keyword '...'"
+     ```
+
+---
+
 ## Running the Test Suite
 
 The backend ships tests covering PII masking, URL validation, proxy helpers

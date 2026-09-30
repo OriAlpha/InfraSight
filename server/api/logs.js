@@ -50,6 +50,7 @@ router.get('/', async (req, res) => {
       minEval: req.query.minEval,
       maxEval: req.query.maxEval,
       taskType: req.query.taskType,
+      safety: req.query.safety,
     });
 
     if (result && result.data) {
@@ -217,9 +218,65 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: { message: 'Request not found' } });
     }
     row.cost = row.estimated_cost !== undefined ? row.estimated_cost : row.cost;
-    // Alias raw_request/raw_response to request_body/response_body for the frontend
-    row.request_body = row.raw_request || null;
-    row.response_body = row.raw_response || null;
+    // Alias raw_request/raw_response to request_body/response_body with fallback reconstruction
+    let requestBody = null;
+    try {
+      requestBody = row.raw_request ? (typeof row.raw_request === 'string' ? JSON.parse(row.raw_request) : row.raw_request) : null;
+    } catch {
+      requestBody = row.raw_request;
+    }
+    if (!requestBody && row.input_messages) {
+      let msgs = row.input_messages;
+      try {
+        if (typeof msgs === 'string') msgs = JSON.parse(msgs);
+      } catch {}
+      if (Array.isArray(msgs) && msgs.length > 0) {
+        requestBody = {
+          model: row.model || 'unknown',
+          messages: msgs,
+          temperature: row.temperature != null ? Number(row.temperature) : 0.7,
+          stream: Boolean(row.stream),
+        };
+        if (row.max_tokens) requestBody.max_tokens = Number(row.max_tokens);
+      }
+    }
+
+    let responseBody = null;
+    try {
+      responseBody = row.raw_response ? (typeof row.raw_response === 'string' ? JSON.parse(row.raw_response) : row.raw_response) : null;
+    } catch {
+      responseBody = row.raw_response;
+    }
+    if (!responseBody && row.output_message) {
+      let outMsg = row.output_message;
+      try {
+        if (typeof outMsg === 'string') outMsg = JSON.parse(outMsg);
+      } catch {}
+      if (outMsg) {
+        if (typeof outMsg === 'string') outMsg = { role: 'assistant', content: outMsg };
+        responseBody = {
+          id: row.id,
+          object: 'chat.completion',
+          model: row.model,
+          choices: [
+            {
+              index: 0,
+              message: outMsg,
+              finish_reason: row.status === 'success' ? 'stop' : 'error',
+            },
+          ],
+          usage: {
+            prompt_tokens: row.prompt_tokens || 0,
+            completion_tokens: row.completion_tokens || 0,
+            total_tokens: row.total_tokens || 0,
+            estimated_cost: row.estimated_cost !== undefined ? row.estimated_cost : row.cost || 0,
+          },
+        };
+      }
+    }
+
+    row.request_body = requestBody;
+    row.response_body = responseBody;
     res.json(row);
   } catch (err) {
     console.error('[logs] GET /:id error:', err.message);
@@ -413,34 +470,42 @@ router.patch('/:id/status', async (req, res) => {
               if (isBanking) {
                 // Log simulated banking tool execution
                 const toolSpanId = `span_tool_${uuidv4().substring(0, 8)}`;
+                const toolInput = [{ role: 'user', content: 'Execute ACH wire settlement for validated transfer request' }];
+                const toolOutput = { role: 'assistant', content: '{"wire_id": "ACH-99482", "status": "SETTLED"}' };
                 await insertRequest({
                   id: uuidv4(),
                   model: 'ach-banking-gateway',
-                  input_messages: [],
-                  output_message: { role: 'assistant', content: '{"wire_id": "ACH-99482", "status": "SETTLED"}' },
+                  input_messages: toolInput,
+                  output_message: toolOutput,
                   status: 'success',
                   trace_id: row.trace_id,
                   span_id: toolSpanId,
                   parent_span_id: row.parent_span_id,
                   span_name: 'Bank Wire API Service',
-                  span_type: 'tool'
+                  span_type: 'tool',
+                  raw_request: { tool: 'ach-banking-gateway', action: 'settle_transfer' },
+                  raw_response: { wire_id: 'ACH-99482', status: 'SETTLED' }
                 });
                 
                 simulatedContent = 'Manager has approved the transfer.\n\nBank Wire Service returned ACH-99482: "Transaction approved. Funds will be settled in the next 2 business days."\n\nTransfer has been successfully completed and settled.';
               } else if (isInvoice) {
                 // Log simulated database ledger write tool execution
                 const toolSpanId = `span_tool_${uuidv4().substring(0, 8)}`;
+                const toolInput = [{ role: 'user', content: 'Update ledger status for invoice record #INV-772' }];
+                const toolOutput = { role: 'assistant', content: '{"status": "PAID", "ledger_status": "synced"}' };
                 await insertRequest({
                   id: uuidv4(),
                   model: 'accounting-ledger-db',
-                  input_messages: [],
-                  output_message: { role: 'assistant', content: '{"status": "PAID", "ledger_status": "synced"}' },
+                  input_messages: toolInput,
+                  output_message: toolOutput,
                   status: 'success',
                   trace_id: row.trace_id,
                   span_id: toolSpanId,
                   parent_span_id: row.parent_span_id,
                   span_name: 'Database Ledger Write',
-                  span_type: 'tool'
+                  span_type: 'tool',
+                  raw_request: { tool: 'accounting-ledger-db', action: 'write_record' },
+                  raw_response: { status: 'PAID', ledger_status: 'synced' }
                 });
                 
                 simulatedContent = 'The invoice payment validation check has been approved. The invoice payment record for #INV-772 has been logged and fully settled in the accounting database.';
@@ -452,17 +517,21 @@ router.patch('/:id/status', async (req, res) => {
             }
 
             // Log final conversational assistant response span
+            const finalInput = [{ role: 'user', content: 'Generate conversational response reflecting compliance outcome.' }];
+            const finalOutput = { role: 'assistant', content: simulatedContent };
             await insertRequest({
               id: uuidv4(),
               model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
-              input_messages: [],
-              output_message: { role: 'assistant', content: simulatedContent },
+              input_messages: finalInput,
+              output_message: finalOutput,
               status: 'success',
               trace_id: row.trace_id,
               span_id: `span_llm_${uuidv4().substring(0, 8)}`,
               parent_span_id: row.parent_span_id,
               span_name: 'Final Response Generator',
-              span_type: 'llm'
+              span_type: 'llm',
+              raw_request: { model: 'meta-llama/Meta-Llama-3.1-8B-Instruct', messages: finalInput },
+              raw_response: { choices: [{ message: finalOutput }] }
             });
           }
         } catch (simError) {
@@ -557,6 +626,8 @@ router.post('/import', async (req, res) => {
           parent_span_id: log.parent_span_id || null,
           span_name: log.span_name || `Imported - ${log.model || 'unknown'}`,
           span_type: log.span_type || 'llm',
+          raw_request: log.raw_request || log.request_body || null,
+          raw_response: log.raw_response || log.response_body || null,
           created_at: log.created_at || new Date().toISOString()
         });
         importedCount++;

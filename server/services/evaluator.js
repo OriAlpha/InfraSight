@@ -290,14 +290,14 @@ Based on the detected task_type, score exactly 5 metrics relevant to that task. 
 |-------------------|----------------------------------------------------------------------------------------------|
 | summarization     | conciseness, information_retention, coherence, instruction_following, completeness           |
 | paraphrase        | semantic_preservation, lexical_diversity, fluency, instruction_following, coherence          |
-| translation       | semantic_preservation, fluency, instruction_following, coherence, completeness               |
-| question_answering| completeness, coherence, instruction_following, fluency, information_retention               |
-| code_generation   | code_correctness, completeness, instruction_following, coherence, conciseness                |
-| creative_writing  | creativity, fluency, coherence, instruction_following, lexical_diversity                     |
-| classification    | instruction_following, completeness, coherence, conciseness, fluency                         |
-| extraction        | completeness, instruction_following, information_retention, coherence, conciseness           |
-| conversation      | coherence, fluency, instruction_following, completeness, creativity                          |
-| general           | coherence, instruction_following, completeness, fluency, conciseness                         |
+| translation       | translation_accuracy, fluency, semantic_preservation, instruction_following, tone_relevance  |
+| question_answering| factual_accuracy, completeness, instruction_following, coherence, conciseness                |
+| code_generation   | code_correctness, code_efficiency, readability, instruction_following, completeness          |
+| creative_writing  | creativity, fluency, lexical_diversity, coherence, instruction_following                     |
+| classification    | classification_accuracy, reasoning_quality, format_compliance, instruction_following, conciseness |
+| extraction        | extraction_precision, format_compliance, completeness, instruction_following, information_retention |
+| conversation      | conversational_flow, coherence, helpfulness, instruction_following, tone_relevance           |
+| general           | instruction_following, helpfulness, coherence, fluency, completeness                         |
 
 List the scored metrics in 'task_metrics'. Do NOT score metrics not in the table for that task type. Every task type must have exactly 5 metrics evaluated.
 
@@ -598,7 +598,14 @@ ${expectedAnswer}`;
       try {
         let jsonStr = rawText.trim();
         if (jsonStr.startsWith('```')) {
-          jsonStr = jsonStr.replace(/^```(?:json)?\n/, '').replace(/\n```$/, '');
+          jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+        } else if (jsonStr.includes('<function=')) {
+          jsonStr = jsonStr.replace(/^<function=[^>]+>\s*/, '').replace(/<\/function>\s*$/, '');
+        }
+        const firstBrace = jsonStr.indexOf('{');
+        const lastBrace = jsonStr.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
         }
         evalData = JSON.parse(jsonStr);
       } catch (parseErr) {

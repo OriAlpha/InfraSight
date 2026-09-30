@@ -16,6 +16,7 @@ import {
   Send,
   Trash2,
   Copy,
+  ShieldOff,
 } from 'lucide-react';
 
 export default function Playground() {
@@ -556,7 +557,7 @@ export default function Playground() {
       ) : (
         <div className="playground-chat-grid">
           {/* Chat Pane */}
-          <div className="glass-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, height: 600 }}>
+          <div className="glass-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, height: 630 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: 12 }}>
               <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <MessageSquare size={16} style={{ color: 'var(--accent-blue)' }} />
@@ -570,6 +571,25 @@ export default function Playground() {
               >
                 <Trash2 size={14} /> Reset
               </button>
+            </div>
+
+            {/* Sandbox Security Disclaimer Banner */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '9px 14px',
+              borderRadius: 8,
+              background: 'rgba(245, 158, 11, 0.08)',
+              border: '1px solid rgba(245, 158, 11, 0.25)',
+              color: 'var(--accent-amber)',
+              fontSize: '0.78125rem',
+              lineHeight: 1.45,
+            }}>
+              <ShieldOff size={16} style={{ flexShrink: 0, color: 'var(--accent-amber)' }} />
+              <div>
+                <strong style={{ fontWeight: 600 }}>Sandbox Notice:</strong> Security features (guardrails, keyword blocks, and PII redaction) are disabled in this environment. Use for testing and prompt evaluation only.
+              </div>
             </div>
 
             {/* Chat message bubbles */}
@@ -605,7 +625,25 @@ export default function Playground() {
                     content={msg.content}
                     tokens={msg.metrics?.completion_tokens}
                     cost={msg.metrics?.cost}
-                  />
+                  >
+                    {msg.log_id && (
+                      <div style={{ marginTop: 8, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                        <Link
+                          to={`/logs/${msg.log_id}`}
+                          style={{
+                            fontSize: '0.75rem',
+                            color: 'var(--accent-blue)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            textDecoration: 'none',
+                          }}
+                        >
+                          <ExternalLink size={11} /> View evaluation & log details
+                        </Link>
+                      </div>
+                    )}
+                  </ChatBubble>
                 ))
               )}
 

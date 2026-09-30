@@ -171,6 +171,12 @@ router.post('/playground', async (req, res) => {
     }
 
     const startTime = Date.now();
+    const requestPayload = {
+      model,
+      messages,
+      temperature: temperature != null ? Number(temperature) : 0.7,
+      stream: false,
+    };
 
     // Call DeepInfra API
     const response = await fetch(DEEPINFRA_COMPLETIONS_URL, {
@@ -179,12 +185,7 @@ router.post('/playground', async (req, res) => {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: temperature != null ? Number(temperature) : 0.7,
-        stream: false,
-      }),
+      body: JSON.stringify(requestPayload),
     });
 
     const latencyMs = Date.now() - startTime;
@@ -214,7 +215,9 @@ router.post('/playground', async (req, res) => {
           error_message: errorMessage,
           temperature: temperature != null ? Number(temperature) : 0.7,
           tags: ['playground'],
-          metadata: { playground: true }
+          metadata: { playground: true },
+          raw_request: requestPayload,
+          raw_response: errorBody
         });
       } catch (dbErr) {
         console.error('[prompts] Failed to insert error playground log:', dbErr.message);
@@ -262,7 +265,9 @@ router.post('/playground', async (req, res) => {
         status: 'success',
         temperature: temperature != null ? Number(temperature) : 0.7,
         tags: ['playground'],
-        metadata: { playground: true }
+        metadata: { playground: true },
+        raw_request: requestPayload,
+        raw_response: body
       });
       
       // Trigger background evaluation
@@ -294,6 +299,27 @@ router.post('/playground', async (req, res) => {
     
     // Log exception to database
     try {
+      const fallbackMessages = Array.isArray(req.body?.messages) && req.body.messages.length > 0
+        ? req.body.messages
+        : [
+            ...(req.body?.system_prompt ? [{ role: 'system', content: req.body.system_prompt }] : []),
+            ...(req.body?.user_template ? [{ role: 'user', content: req.body.user_template }] : [])
+          ];
+
+      const rawRequest = {
+        model: req.body?.model || 'unknown',
+        messages: fallbackMessages,
+        temperature: req.body?.temperature != null ? Number(req.body.temperature) : 0.7,
+        stream: false,
+      };
+
+      const rawResponse = {
+        error: {
+          message: err.message,
+          type: 'playground_error',
+        }
+      };
+
       await insertRequest({
         id: requestId,
         conversation_id: req.body?.conversation_id || null,
@@ -303,7 +329,7 @@ router.post('/playground', async (req, res) => {
         span_type: 'llm',
         model: req.body?.model || 'unknown',
         provider: 'deepinfra',
-        input_messages: [],
+        input_messages: fallbackMessages,
         output_message: null,
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -313,7 +339,9 @@ router.post('/playground', async (req, res) => {
         status: 'error',
         error_message: err.message,
         tags: ['playground'],
-        metadata: { playground: true }
+        metadata: { playground: true },
+        raw_request: rawRequest,
+        raw_response: rawResponse,
       });
     } catch (dbErr) {
       console.error('[prompts] Failed to log exception to database:', dbErr.message);

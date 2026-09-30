@@ -79,7 +79,7 @@ app.use((_req, res, next) => {
 
 // CORS — allow the Vite dev server and any configured client URL
 app.use(cors({
-  origin: [CLIENT_URL, 'http://localhost:5173', 'http://localhost:3000'],
+  origin: [CLIENT_URL, 'http://localhost:5173', 'http://localhost:3000', `http://localhost:${PORT}`],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
@@ -328,3 +328,4 @@ if (require.main === module) {
 module.exports = app;
 module.exports.start = start;
 module.exports.shutdown = shutdown;
+// infra-sight server ready
