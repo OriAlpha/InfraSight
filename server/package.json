@@ -7,6 +7,7 @@
     "start": "node index.js",
     "seed": "node db/seed-models.js",
     "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
     "check": "node --check index.js"
   },
   "dependencies": {
