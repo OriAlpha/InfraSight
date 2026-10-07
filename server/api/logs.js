@@ -91,6 +91,7 @@ router.get('/export/csv', async (req, res) => {
       minEval: req.query.minEval,
       maxEval: req.query.maxEval,
       taskType: req.query.taskType,
+      safety: req.query.safety,
     });
 
     const CSV_COLUMNS = [
@@ -167,6 +168,7 @@ router.get('/export/finetuning', async (req, res) => {
       minEval: req.query.minEval,
       maxEval: req.query.maxEval,
       taskType: req.query.taskType,
+      safety: req.query.safety,
     });
 
     const lines = [];

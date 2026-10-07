@@ -11,9 +11,10 @@ const { Router } = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { getPrompts, getPromptByName, getPromptHistory, insertPrompt, getDb, insertRequest } = require('../db');
 const { queueEvaluation } = require('../services/evaluator');
+const { getConfig } = require('../utils/config');
+const { getTargetUrl } = require('../proxy/lib');
 
 const router = Router();
-const DEEPINFRA_COMPLETIONS_URL = 'https://api.deepinfra.com/v1/openai/chat/completions';
 
 /**
  * Helper to render prompt templates by replacing {{variable}} placeholders.
@@ -148,9 +149,34 @@ router.post('/playground', async (req, res) => {
       return res.status(400).json({ error: { message: 'Model is required' } });
     }
 
-    const apiKey = process.env.DEEPINFRA_API_KEY;
-    if (!apiKey) {
-      return res.status(400).json({ error: { message: 'No DeepInfra API key configured on this InfraSight server' } });
+    const upstreamBase = await getConfig('UPSTREAM_API_BASE');
+    const deepinfraBase = process.env.DEEPINFRA_BASE_URL;
+    const upstreamBaseUrl = upstreamBase || deepinfraBase || 'https://api.deepinfra.com';
+
+    const providerName = (await getConfig('UPSTREAM_PROVIDER')) || 'deepinfra';
+
+    const upstreamKey = await getConfig('UPSTREAM_API_KEY');
+    const apiKey = upstreamKey || process.env.DEEPINFRA_API_KEY;
+
+    const hasUsableKey = Boolean(apiKey)
+      && !apiKey.includes('invalid-or-missing-key')
+      && !apiKey.includes('placeholder')
+      && !apiKey.includes('your_');
+
+    const mockSetting = ((await getConfig('MOCK_MODE')) || '').toLowerCase();
+    let useMock;
+    if (mockSetting === 'true') {
+      useMock = true;
+    } else if (mockSetting === 'false') {
+      useMock = false;
+    } else {
+      useMock = !hasUsableKey && process.env.NODE_ENV !== 'production';
+    }
+
+    if (!hasUsableKey && !useMock) {
+      return res.status(400).json({
+        error: { message: `No API key configured for provider "${providerName}". Please configure UPSTREAM_API_KEY in Settings.` }
+      });
     }
 
     let messages = [];
@@ -170,7 +196,6 @@ router.post('/playground', async (req, res) => {
       messages.push({ role: 'user', content: renderedUser });
     }
 
-    const startTime = Date.now();
     const requestPayload = {
       model,
       messages,
@@ -178,8 +203,83 @@ router.post('/playground', async (req, res) => {
       stream: false,
     };
 
-    // Call DeepInfra API
-    const response = await fetch(DEEPINFRA_COMPLETIONS_URL, {
+    // Handle mock mode
+    if (useMock) {
+      const latencyMs = Math.floor(Math.random() * 250) + 100;
+      const promptTokens = Math.max(15, Math.ceil(JSON.stringify(messages).length / 4));
+      const completionTokens = Math.floor(Math.random() * 80) + 20;
+      const totalTokens = promptTokens + completionTokens;
+      const mockOutput = `This is a mock completion from InfraSight for model ${model}. (Provider "${providerName}" running in mock mode).`;
+      const cost = await estimatePlaygroundCost(model, promptTokens, completionTokens);
+
+      const mockBody = {
+        id: `chatcmpl-${uuidv4().substring(0, 8)}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: mockOutput },
+            finish_reason: 'stop',
+          }
+        ],
+        usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: totalTokens }
+      };
+
+      try {
+        await insertRequest({
+          id: requestId,
+          conversation_id: conversation_id || null,
+          trace_id: traceId,
+          span_id: requestId,
+          span_name: conversation_id ? `Playground Chat - ${model}` : `Playground Run - ${model}`,
+          span_type: 'llm',
+          model,
+          provider: providerName,
+          input_messages: messages,
+          output_message: { role: 'assistant', content: mockOutput },
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: totalTokens,
+          estimated_cost: cost,
+          latency_ms: latencyMs,
+          status: 'success',
+          temperature: temperature != null ? Number(temperature) : 0.7,
+          tags: ['playground', 'mock'],
+          metadata: { playground: true, mock: true },
+          raw_request: requestPayload,
+          raw_response: mockBody
+        });
+        queueEvaluation(requestId);
+      } catch (dbErr) {
+        console.error('[prompts] Failed to insert mock playground log:', dbErr.message);
+      }
+
+      return res.json({
+        success: true,
+        log_id: requestId,
+        rendered: {
+          system_prompt: renderedSystem,
+          user_prompt: renderedUser
+        },
+        output: mockOutput,
+        metrics: {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: totalTokens,
+          latency_ms: latencyMs,
+          cost,
+          tokens_per_second: completionTokens > 0 ? Math.round((completionTokens / (latencyMs / 1000)) * 10) / 10 : 0
+        }
+      });
+    }
+
+    const startTime = Date.now();
+    const targetUrl = getTargetUrl('v1/openai/chat/completions', { providerName, upstreamBaseUrl });
+
+    // Call upstream API
+    const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -192,7 +292,7 @@ router.post('/playground', async (req, res) => {
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
-      const errorMessage = errorBody.error?.message || `DeepInfra returned HTTP ${response.status}`;
+      const errorMessage = errorBody.error?.message || `${providerName} returned HTTP ${response.status}`;
 
       try {
         await insertRequest({
@@ -203,7 +303,7 @@ router.post('/playground', async (req, res) => {
           span_name: conversation_id ? `Playground Chat - ${model}` : `Playground Run - ${model}`,
           span_type: 'llm',
           model,
-          provider: 'deepinfra',
+          provider: providerName,
           input_messages: messages,
           output_message: null,
           prompt_tokens: 0,
@@ -254,7 +354,7 @@ router.post('/playground', async (req, res) => {
         span_name: conversation_id ? `Playground Chat - ${model}` : `Playground Run - ${model}`,
         span_type: 'llm',
         model,
-        provider: 'deepinfra',
+        provider: providerName,
         input_messages: messages,
         output_message: { role: 'assistant', content: outputText },
         prompt_tokens: promptTokens,
@@ -320,6 +420,8 @@ router.post('/playground', async (req, res) => {
         }
       };
 
+      const fallbackProvider = (await getConfig('UPSTREAM_PROVIDER').catch(() => null)) || 'deepinfra';
+
       await insertRequest({
         id: requestId,
         conversation_id: req.body?.conversation_id || null,
@@ -328,7 +430,7 @@ router.post('/playground', async (req, res) => {
         span_name: req.body?.conversation_id ? `Playground Chat` : `Playground Run`,
         span_type: 'llm',
         model: req.body?.model || 'unknown',
-        provider: 'deepinfra',
+        provider: fallbackProvider,
         input_messages: fallbackMessages,
         output_message: null,
         prompt_tokens: 0,

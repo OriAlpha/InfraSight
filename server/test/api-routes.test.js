@@ -374,3 +374,91 @@ test('API /api/settings: get and update settings', async () => {
   });
   assert.equal(putRes.status, 200);
 });
+
+test('API /api/logs: exports with safety filter', async () => {
+  await db.insertRequest({
+    id: 'req-safety-export-1',
+    model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+    provider: 'deepinfra',
+    input_messages: [{ role: 'user', content: 'Safe prompt' }],
+    output_message: { role: 'assistant', content: 'Safe answer' },
+    status: 'success',
+    evaluation: { safety: { status: 'safe' } },
+  });
+
+  await db.insertRequest({
+    id: 'req-safety-export-2',
+    model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+    provider: 'deepinfra',
+    input_messages: [{ role: 'user', content: 'Unsafe prompt' }],
+    output_message: { role: 'assistant', content: 'Unsafe answer' },
+    status: 'success',
+    evaluation: { safety: { status: 'unsafe' } },
+  });
+
+  // Export CSV filtered by safety=safe
+  const csvRes = await fetch(`${baseUrl}/api/logs/export/csv?safety=safe`);
+  assert.equal(csvRes.status, 200);
+  const csvText = await csvRes.text();
+  assert.ok(csvText.includes('req-safety-export-1'));
+  assert.ok(!csvText.includes('req-safety-export-2'));
+
+  // Export fine-tuning dataset filtered by safety=safe
+  const ftRes = await fetch(`${baseUrl}/api/logs/export/finetuning?safety=safe`);
+  assert.equal(ftRes.status, 200);
+  const ftText = await ftRes.text();
+  assert.ok(ftText.includes('Safe prompt'));
+  assert.ok(!ftText.includes('Unsafe prompt'));
+});
+
+test('API /api/prompts/playground: handles mock mode execution', async () => {
+  const { setConfig } = require('../utils/config');
+  await setConfig('MOCK_MODE', 'true');
+
+  const playRes = await fetch(`${baseUrl}/api/prompts/playground`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+      system_prompt: 'You are an assistant',
+      user_template: 'Tell me a joke',
+      variables: {},
+    }),
+  });
+
+  assert.equal(playRes.status, 200);
+  const data = await playRes.json();
+  assert.equal(data.success, true);
+  assert.ok(data.output.includes('mock completion'));
+  assert.ok(data.log_id);
+
+  await setConfig('MOCK_MODE', 'false');
+});
+
+test('API /api/conversations/:id: fallback when conversations table record is missing', async () => {
+  const missingConvId = 'orphan-conv-999';
+  await db.insertRequest({
+    id: 'req-orphan-1',
+    conversation_id: missingConvId,
+    model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+    provider: 'deepinfra',
+    input_messages: [{ role: 'user', content: 'Hello orphan' }],
+    output_message: { role: 'assistant', content: 'Hello there' },
+    status: 'success',
+  });
+
+  // Manually remove conversations row if auto-created to simulate missing row
+  const rawDb = db.getDb();
+  if (rawDb && typeof rawDb.prepare === 'function') {
+    rawDb.pragma('foreign_keys = OFF');
+    rawDb.prepare('DELETE FROM conversations WHERE id = ?').run(missingConvId);
+    rawDb.pragma('foreign_keys = ON');
+  }
+
+  const detailRes = await fetch(`${baseUrl}/api/conversations/${missingConvId}`);
+  assert.equal(detailRes.status, 200);
+  const data = await detailRes.json();
+  assert.equal(data.conversation.id, missingConvId);
+  assert.equal(data.messages.length, 1);
+});
+
