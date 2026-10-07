@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-07
+
+### Fixed
+- **Chat & Conversation Multi-Turn Sequence Rendering**:
+  - Resolved an issue in `LogDetail.jsx` where standalone multi-turn chat completions dropped intermediate turns and system prompts. Multi-span trace chat reconstruction is now restricted to multi-span agent traces containing tools or verification checks (`hasMultiSpanFlow`).
+  - Fixed message history truncation in `Conversations.jsx` when viewing single-log conversations (`messages.length === 1`), ensuring all cumulative input messages and the assistant output are displayed chronologically.
+  - Hardened chronological span sorting in `LogDetail.jsx` against null or malformed `created_at` timestamps.
+- **Playground Upstream Provider & Mock Mode Parity**:
+  - Refactored `server/api/prompts.js` to dynamically resolve `UPSTREAM_API_BASE`, `UPSTREAM_API_KEY`, and `UPSTREAM_PROVIDER` database settings via `getConfig` and `getTargetUrl`.
+  - Added native `MOCK_MODE` support in Playground, providing synthetic completions with metrics when running in mock mode or dev environments without API keys.
+  - Fixed database records inserted by Playground to log the active upstream provider rather than hardcoding `'deepinfra'`.
+- **Trace Explorer Payload & Field Parsing**:
+  - Enhanced `Traces.jsx` to safely parse stringified `input_messages` and `output_message` payloads, rendering styled role cards and response blocks rather than raw JSON viewers.
+  - Updated `server/api/traces.js` with per-field `safeJsonParse` so an unformatted string in one field does not abort parsing of `metadata`, `tags`, `feedback`, or `evaluation`.
+- **Export Safety Filter Enforcement**:
+  - Added the missing `safety` query parameter to `/api/logs/export/csv` and `/api/logs/export/finetuning` in `server/api/logs.js`, ensuring safety filters are strictly applied when exporting CSVs or fine-tuning datasets.
+- **Database Schema & Fallback Hardening**:
+  - Added synthetic conversation fallbacks in `server/db/sqlite.js` and `server/db/postgres.js` `getConversation` to gracefully recover conversation metadata when child request logs exist.
+  - Added null guard for `rootRequest` in `calculateAgentMetrics` in `sqlite.js` matching PostgreSQL adapter parity.
+
 ## [1.1.0] - 2026-10-07
 
 ### Added
