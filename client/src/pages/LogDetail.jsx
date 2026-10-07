@@ -92,10 +92,17 @@ export default function LogDetail() {
     };
     traceTree.rootSpans.forEach(traverse);
 
+    // Only reconstruct multi-span trace messages if this is actually a multi-span trace
+    // containing child tools, checks, or multiple agent execution steps.
+    const hasMultiSpanFlow = list.length > 1 && list.some(s => s.span_type === 'tool' || s.span_type === 'check');
+    if (!hasMultiSpanFlow) return null;
+
     // Sort by created_at to guarantee chronological chat sequence
     list.sort((a, b) => new Date(a.created_at.replace(' ', 'T')) - new Date(b.created_at.replace(' ', 'T')));
 
     const msgs = [];
+    const seenMessages = new Set();
+
     list.forEach(span => {
       if (span.span_type === 'llm' || span.span_type === 'agent' || !span.span_type) {
         let inputs = [];
@@ -104,14 +111,18 @@ export default function LogDetail() {
         } catch {}
         if (!Array.isArray(inputs)) inputs = [];
 
-        const userInputs = inputs.filter(m => m.role === 'user');
-        userInputs.forEach(msg => {
-          msgs.push({
-            id: `${span.span_id}-user-${typeof msg.content === 'string' ? msg.content.substring(0, 10) : 'user'}`,
-            role: 'user',
-            content: msg.content,
-            spanName: span.span_name
-          });
+        inputs.forEach((msg, idx) => {
+          if (!msg || !msg.content) return;
+          const key = `${msg.role || 'user'}:${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}`;
+          if (!seenMessages.has(key)) {
+            seenMessages.add(key);
+            msgs.push({
+              id: `${span.span_id}-input-${idx}`,
+              role: msg.role || 'user',
+              content: msg.content,
+              spanName: span.span_name
+            });
+          }
         });
 
         let output = null;
@@ -119,14 +130,18 @@ export default function LogDetail() {
           output = typeof span.output_message === 'string' ? JSON.parse(span.output_message) : span.output_message;
         } catch {}
         if (output && output.content) {
-          msgs.push({
-            id: `${span.span_id}-assistant`,
-            role: 'assistant',
-            content: output.content,
-            tokens: span.completion_tokens,
-            cost: span.estimated_cost !== undefined ? span.estimated_cost : span.cost,
-            spanName: span.span_name
-          });
+          const key = `${output.role || 'assistant'}:${typeof output.content === 'string' ? output.content : JSON.stringify(output.content)}`;
+          if (!seenMessages.has(key)) {
+            seenMessages.add(key);
+            msgs.push({
+              id: `${span.span_id}-assistant`,
+              role: output.role || 'assistant',
+              content: output.content,
+              tokens: span.completion_tokens,
+              cost: span.estimated_cost !== undefined ? span.estimated_cost : span.cost,
+              spanName: span.span_name
+            });
+          }
         }
       }
       else if (span.span_type === 'check') {
@@ -136,13 +151,17 @@ export default function LogDetail() {
         } catch {}
         if (!Array.isArray(inputs)) inputs = [];
 
-        const userInputs = inputs.filter(m => m.role === 'user');
-        userInputs.forEach(msg => {
-          msgs.push({
-            id: `${span.span_id}-check-user`,
-            role: 'user',
-            content: `[Verification Check: ${span.span_name}] ${msg.content}`
-          });
+        inputs.forEach((msg, idx) => {
+          if (!msg || !msg.content) return;
+          const key = `check-user:${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}`;
+          if (!seenMessages.has(key)) {
+            seenMessages.add(key);
+            msgs.push({
+              id: `${span.span_id}-check-user-${idx}`,
+              role: 'user',
+              content: `[Verification Check: ${span.span_name}] ${msg.content}`
+            });
+          }
         });
 
         if (span.status === 'success') {
@@ -699,6 +718,13 @@ export default function LogDetail() {
                     content={outputMessage.content}
                     tokens={log.completion_tokens}
                     cost={log.estimated_cost !== undefined ? log.estimated_cost : log.cost}
+                    style={{ '--stagger-delay': `${Math.min(inputMessages.length * 40, 400)}ms` }}
+                  />
+                )}
+                {!outputMessage && (log.status === 'error' || log.error_message) && (
+                  <ChatBubble
+                    role="system"
+                    content={`⚠️ Request failed: ${log.error_message || 'Error executing completion'}`}
                     style={{ '--stagger-delay': `${Math.min(inputMessages.length * 40, 400)}ms` }}
                   />
                 )}
