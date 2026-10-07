@@ -9,6 +9,7 @@
     "build": "cd client && npx vite build",
     "start": "cd server && node index.js",
     "test": "cd server && node --test",
+    "test:coverage": "cd server && npm run test:coverage",
     "lint": "node scripts/check-syntax.js"
   },
   "devDependencies": {
