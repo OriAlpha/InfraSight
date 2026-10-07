@@ -227,18 +227,25 @@ function ConversationDetail({ id, onBack }) {
           : log.input_messages || [];
       } catch { inputs = []; }
 
-      // Include system prompt from initial turn
-      if (logIdx === 0 && chatMessages.length === 0) {
-        const sysMsg = inputs.find((m) => m.role === 'system');
-        if (sysMsg) {
-          chatMessages.push({ ...sysMsg, timestamp: log.created_at, logId: log.id });
+      // For single-log conversations, render the full multi-turn input history
+      if (messages.length === 1) {
+        inputs.forEach((m) => {
+          chatMessages.push({ ...m, timestamp: log.created_at, logId: log.id });
+        });
+      } else {
+        // For multi-log conversations, include system prompt from initial turn
+        if (logIdx === 0 && chatMessages.length === 0) {
+          const sysMsg = inputs.find((m) => m.role === 'system');
+          if (sysMsg) {
+            chatMessages.push({ ...sysMsg, timestamp: log.created_at, logId: log.id });
+          }
         }
-      }
 
-      // Include the user message for this turn
-      const userMsg = [...inputs].reverse().find((m) => m.role === 'user');
-      if (userMsg) {
-        chatMessages.push({ ...userMsg, timestamp: log.created_at, logId: log.id });
+        // Include the user message for this turn
+        const userMsg = [...inputs].reverse().find((m) => m.role === 'user');
+        if (userMsg) {
+          chatMessages.push({ ...userMsg, timestamp: log.created_at, logId: log.id });
+        }
       }
 
       let output = null;
@@ -265,13 +272,17 @@ function ConversationDetail({ id, onBack }) {
       if (output && !output.role) output.role = 'assistant';
 
       if (output) {
-        chatMessages.push({
-          ...output,
-          tokens: log.completion_tokens,
-          cost: log.estimated_cost !== undefined ? log.estimated_cost : log.cost,
-          timestamp: log.created_at,
-          logId: log.id,
-        });
+        const lastMsg = chatMessages[chatMessages.length - 1];
+        const isDuplicate = messages.length === 1 && lastMsg && lastMsg.role === output.role && lastMsg.content === output.content;
+        if (!isDuplicate) {
+          chatMessages.push({
+            ...output,
+            tokens: log.completion_tokens,
+            cost: log.estimated_cost !== undefined ? log.estimated_cost : log.cost,
+            timestamp: log.created_at,
+            logId: log.id,
+          });
+        }
       } else if (log.status === 'error' || log.error_message) {
         chatMessages.push({
           role: 'system',

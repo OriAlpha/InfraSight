@@ -34,6 +34,15 @@ router.get('/', async (req, res) => {
   }
 });
 
+function safeJsonParse(val, fallback = val) {
+  if (typeof val !== 'string') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * GET /api/traces/:id
  * Fetches spans for a trace and returns a nested tree.
@@ -53,17 +62,13 @@ router.get('/:id', async (req, res) => {
     const rootSpans = [];
     
     for (const span of spans) {
-      // Parse JSON fields
-      try {
-        span.input_messages = typeof span.input_messages === 'string' ? JSON.parse(span.input_messages) : span.input_messages;
-        span.output_message = typeof span.output_message === 'string' ? JSON.parse(span.output_message) : span.output_message;
-        span.metadata = typeof span.metadata === 'string' ? JSON.parse(span.metadata) : span.metadata;
-        span.tags = typeof span.tags === 'string' ? JSON.parse(span.tags) : span.tags;
-        span.feedback = typeof span.feedback === 'string' ? JSON.parse(span.feedback) : span.feedback;
-        span.evaluation = typeof span.evaluation === 'string' ? JSON.parse(span.evaluation) : span.evaluation;
-      } catch (e) {
-        // Keep as original
-      }
+      // Parse JSON fields safely and independently
+      span.input_messages = safeJsonParse(span.input_messages, span.input_messages);
+      span.output_message = safeJsonParse(span.output_message, span.output_message);
+      span.metadata = safeJsonParse(span.metadata, span.metadata);
+      span.tags = safeJsonParse(span.tags, span.tags);
+      span.feedback = safeJsonParse(span.feedback, span.feedback);
+      span.evaluation = safeJsonParse(span.evaluation, span.evaluation);
       
       spansMap[span.span_id] = {
         ...span,

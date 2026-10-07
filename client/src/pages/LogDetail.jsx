@@ -98,7 +98,11 @@ export default function LogDetail() {
     if (!hasMultiSpanFlow) return null;
 
     // Sort by created_at to guarantee chronological chat sequence
-    list.sort((a, b) => new Date(a.created_at.replace(' ', 'T')) - new Date(b.created_at.replace(' ', 'T')));
+    list.sort((a, b) => {
+      const timeA = a.created_at ? new Date(String(a.created_at).replace(' ', 'T')).getTime() : 0;
+      const timeB = b.created_at ? new Date(String(b.created_at).replace(' ', 'T')).getTime() : 0;
+      return timeA - timeB;
+    });
 
     const msgs = [];
     const seenMessages = new Set();

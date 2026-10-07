@@ -806,6 +806,20 @@ async function getConversation(id) {
   let conversation = convRes.rows[0];
   const messages = msgsRes.rows;
 
+  if (!conversation && messages.length > 0) {
+    const totalTokens = messages.reduce((s, m) => s + (m.total_tokens || 0), 0);
+    const totalCost = messages.reduce((s, m) => s + (m.estimated_cost != null ? m.estimated_cost : (m.cost || 0)), 0);
+    conversation = {
+      id,
+      created_at: messages[0].created_at,
+      total_tokens: totalTokens,
+      total_cost: totalCost,
+      total_messages: messages.length,
+      model: messages[0].model || null,
+      title: null,
+    };
+  }
+
   if (conversation && !conversation.title && messages.length > 0) {
     for (const msg of messages) {
       try {

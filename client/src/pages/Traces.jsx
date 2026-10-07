@@ -536,22 +536,36 @@ export default function TracesView({ modelFilter, statusFilter, dateRange, focus
                     </div>
                   </div>
                 );
-              })() : Array.isArray(selectedSpan.input_messages) ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto' }}>
-                  {selectedSpan.input_messages.map((msg, i) => (
-                    <div key={i} className="glass-card" style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', fontSize: '0.75rem', transform: 'none', background: msg.role === 'user' ? 'rgba(59, 130, 246, 0.05)' : 'rgba(255,255,255,0.02)' }}>
-                      <span style={{ fontWeight: 600, color: msg.role === 'user' ? 'var(--accent-blue)' : 'var(--text-secondary)', textTransform: 'capitalize' }}>
-                        {msg.role}:
-                      </span>
-                      <div style={{ marginTop: 4, whiteSpace: 'pre-wrap', color: 'var(--text-primary)' }}>
-                        {msg.content}
-                      </div>
+              })() : (() => {
+                let inputsList = [];
+                if (Array.isArray(selectedSpan.input_messages)) {
+                  inputsList = selectedSpan.input_messages;
+                } else if (typeof selectedSpan.input_messages === 'string') {
+                  try {
+                    const parsed = JSON.parse(selectedSpan.input_messages);
+                    if (Array.isArray(parsed)) inputsList = parsed;
+                  } catch {}
+                }
+
+                if (inputsList.length > 0) {
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto' }}>
+                      {inputsList.map((msg, i) => (
+                        <div key={i} className="glass-card" style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', fontSize: '0.75rem', transform: 'none', background: msg?.role === 'user' ? 'rgba(59, 130, 246, 0.05)' : 'rgba(255,255,255,0.02)' }}>
+                          <span style={{ fontWeight: 600, color: msg?.role === 'user' ? 'var(--accent-blue)' : 'var(--text-secondary)', textTransform: 'capitalize' }}>
+                            {msg?.role || 'message'}:
+                          </span>
+                          <div style={{ marginTop: 4, whiteSpace: 'pre-wrap', color: 'var(--text-primary)' }}>
+                            {typeof msg?.content === 'string' ? msg.content : JSON.stringify(msg?.content, null, 2)}
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <JsonViewer data={selectedSpan.input_messages} />
-              )}
+                  );
+                }
+
+                return <JsonViewer data={selectedSpan.input_messages} />;
+              })()}
             </div>
 
             {/* Output details */}
@@ -585,20 +599,33 @@ export default function TracesView({ modelFilter, statusFilter, dateRange, focus
                   </div>
                 </div>
               );
-            })() : selectedSpan.output_message && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>Output / Response</span>
-                {selectedSpan.output_message.content ? (
-                  <div className="glass-card" style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', fontSize: '0.75rem', transform: 'none', background: 'rgba(16, 185, 129, 0.05)' }}>
-                    <div style={{ whiteSpace: 'pre-wrap', color: 'var(--text-primary)' }}>
-                      {selectedSpan.output_message.content}
+            })() : (() => {
+              if (!selectedSpan.output_message) return null;
+              let outObj = selectedSpan.output_message;
+              if (typeof outObj === 'string') {
+                try {
+                  const parsed = JSON.parse(outObj);
+                  if (parsed && typeof parsed === 'object') outObj = parsed;
+                } catch {}
+              }
+
+              const content = typeof outObj === 'object' ? outObj?.content : String(outObj);
+
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>Output / Response</span>
+                  {content ? (
+                    <div className="glass-card" style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', fontSize: '0.75rem', transform: 'none', background: 'rgba(16, 185, 129, 0.05)' }}>
+                      <div style={{ whiteSpace: 'pre-wrap', color: 'var(--text-primary)' }}>
+                        {typeof content === 'string' ? content : JSON.stringify(content, null, 2)}
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <JsonViewer data={selectedSpan.output_message} />
-                )}
-              </div>
-            )}
+                  ) : (
+                    <JsonViewer data={selectedSpan.output_message} />
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Raw JSON payload Toggle */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
