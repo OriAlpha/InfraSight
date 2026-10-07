@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-07
+
 ### Added
 - **Comprehensive Backend & Utility Test Coverage Suite (`npm run test:coverage`)**:
   Expanded backend and utility test suite to 153 passing tests (>81% overall line coverage, 90%+ across core modules):
