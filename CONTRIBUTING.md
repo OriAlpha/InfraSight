@@ -46,11 +46,17 @@ Thank you for your interest in contributing to InfraSight! We welcome contributi
 
 #### Node.js (Server & Client)
 ```bash
-# Build the client to verify no compilation errors
-cd client && npm run build
+# Run unit and integration tests
+npm test
 
-# Start the server and verify it boots
-npm run dev:server
+# Run tests with experimental code coverage report
+npm run test:coverage
+
+# Verify syntax across all server files
+npm run lint
+
+# Build the client to verify no compilation errors
+npm run build
 ```
 
 #### Python Integration Tests

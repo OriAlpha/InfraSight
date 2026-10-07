@@ -8,7 +8,8 @@
     "seed": "node db/seed-models.js",
     "test": "node --test",
     "test:coverage": "node --test --experimental-test-coverage",
-    "check": "node --check index.js"
+    "lint": "node ../scripts/check-syntax.js",
+    "check": "node ../scripts/check-syntax.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

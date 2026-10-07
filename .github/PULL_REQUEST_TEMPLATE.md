@@ -17,6 +17,8 @@ Please delete options that are not relevant.
 
 Please describe the tests that you ran to verify your changes. Provide instructions so we can reproduce.
 
+- [ ] Passed backend test suite (`npm test` / `npm run test:coverage`)
+- [ ] Passed syntax verification (`npm run lint`)
 - [ ] Tested with `uv run tests/run_all.py` against local proxy server
 - [ ] Verified frontend UI rendering and components function as expected
 - [ ] Other (please describe)

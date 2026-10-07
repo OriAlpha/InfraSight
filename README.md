@@ -82,7 +82,7 @@ response = client.chat.completions.create(
 ## Getting Started
 
 ### 1. Prerequisites
-- **Node.js** (v18 or higher)
+- **Node.js** (v20 or higher)
 - **Python** (v3.9 or higher)
 
 ### 2. Configure Environment Variables
@@ -109,13 +109,13 @@ To run the server and client concurrently from the project root:
 # Install Node.js dependencies
 npm install
 
-# Run backend (port 3000) and frontend (port 5173) concurrently
+# Run backend (default port 3000, configurable via PORT in .env) and frontend (port 5173) concurrently
 npm run dev
 ```
 
 Alternatively, you can run them individually:
-*   **Run Backend Server**: `npm run dev:server` (running on http://localhost:3000)
-*   **Run Frontend Client**: `npm run dev:client` (running on http://localhost:5173)
+*   **Run Backend Server**: `npm run dev:server` (running on http://localhost:3000 by default, or your configured `PORT`)
+*   **Run Frontend Client**: `npm run dev:client` (running on http://localhost:5173, dynamically reverse-proxying `/api` requests to your backend `PORT`)
 
 ---
 
@@ -283,16 +283,24 @@ In addition to the 5 domain-specific metrics, InfraSight conditionally activates
 
 ## Running the Test Suite
 
-The backend ships tests covering PII masking, URL validation, proxy helpers
-(SSE parsing, guardrails, token estimation), authentication, rate limiting,
-evaluator queue concurrency and backlog recovery, analytics aggregation, and
-adapter parity between the SQLite and PostgreSQL backends:
+The backend ships a comprehensive test suite (150+ tests) covering PII masking, URL validation, proxy helpers
+(SSE parsing, guardrails, token estimation), proxy integration (streaming and non-streaming requests,
+guardrail blocks, and error handling), authentication, rate limiting, LLM-as-a-Judge scoring engine
+(5 domain-specific criteria, weighted evaluations, penalty calculations, task types), evaluator queue concurrency
+and backlog recovery, SQLite and PostgreSQL analytics aggregation and prompts, Express API route handlers,
+client latency breakdown computations, webhook alerts, and adapter parity between the SQLite and PostgreSQL backends:
 
 ```bash
 npm test
 ```
 
-To parse every server-side file without running it:
+To run the complete test suite and generate an experimental code coverage report:
+
+```bash
+npm run test:coverage
+```
+
+To parse every server-side JavaScript file without running it:
 
 ```bash
 npm run lint

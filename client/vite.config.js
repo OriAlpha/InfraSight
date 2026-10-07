@@ -5,7 +5,7 @@ import path from 'path';
 export default defineConfig(({ mode }) => {
   // Automatically load environment variables from the project root .env
   const env = loadEnv(mode, path.resolve(__dirname, '..'), '');
-  const backendPort = env.PORT || 9000;
+  const backendPort = env.PORT || 3000;
   
   let clientPort = 5173;
   if (env.CLIENT_PORT) {
